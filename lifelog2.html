@@ -32,15 +32,16 @@ const FOOD_BODY = ["hungry","nauseous","jittery","headache"];
 const PAIN_BODY = ["headache","sore","back/neck pain","joint pain","stomach pain","pain"];   // the last four only appear via profile (chronic pain locations)
 
 /* =====================================================================
-   STEP 1 (overview) is fixed and only about THIS INSTANT:
-     mood, energy, stress (1-10), emotions, body.  No look-back anywhere in step 1.
-
-   STEP 2 (follow-ups) is the RULES table below. After step 1, every rule whose
-   test() is true adds its questions. Rules are re-checked after each answer,
-   so a follow-up answer can unlock deeper follow-ups (see `parent`).
+   THE ENTRY FORM is one page. The overview (mood, energy, stress 1-10, emotions, body)
+   is only about THIS INSTANT, with no look-back. Follow-ups are the RULES table below:
+   every rule whose test() is true shows its questions INLINE, directly under the
+   overview answer it belongs to (`anchor`). Rules are re-checked after each answer, so a
+   follow-up answer can unlock a deeper one (see `parent`). Same idea as the profile.
+   The entry is stamped the first time you answer anything, and that time can't be changed.
 
    HOW TO ADD A FOLLOW-UP: add one object to RULES.
      id      unique name
+     anchor  where it appears: "mood" | "energy" | "stress" | "emotions" | "body" | "context" (end of form)
      group   heading shown above the questions
      period  what time span the question covers (shown to you, and on the Logic tab)
      reads   which answers the test looks at (used for the "which answers feed which rules" table)
@@ -50,42 +51,43 @@ const PAIN_BODY = ["headache","sore","back/neck pain","joint pain","stomach pain
      qs      function returning questions: {field, label, type:"radio"|"check"|"number", q, opts, req}
    The Logic tab, the Insights tables and the CSV columns are all generated from this table.
    ===================================================================== */
+const ANCHORS=["mood","energy","stress","emotions","body","context"];
 const has=(arr,x)=>Array.isArray(arr)&&arr.includes(x);
 const hasAny=(arr,xs)=>xs.some(x=>has(arr,x));
 const fu=f=>(draft.fu&&draft.fu[f]);
 
 const RULES = [
-  {id:"mood_extreme",group:"Mood",period:"the moment",reads:["mood"],
+  {id:"mood_extreme",anchor:"mood",group:"Mood",period:"the moment",reads:["mood"],
    cond:"mood is 4 or below, or 8 or above",
    test:()=>touched.mood&&(draft.mood<=4||draft.mood>=8),
    qs:()=>[{field:"moodWhy",label:"What's behind your mood",type:"check",q:"What's mostly behind your mood right now?",opts:MOOD_WHY,req:true}]},
-  {id:"stress_high",group:"Stress",period:"the moment",reads:["stress"],
+  {id:"stress_high",anchor:"stress",group:"Stress",period:"the moment",reads:["stress"],
    cond:"stress is 7 or above",
    test:()=>touched.stress&&draft.stress>=7,
    qs:()=>[{field:"stressWhy",label:"Source of stress",type:"check",q:"What's the main source of your stress right now?",opts:STRESS_WHY,req:true},
            {field:"stressControl",label:"Stress manageability",type:"radio",q:"Does the stress feel manageable?",opts:["manageable","borderline","overwhelming"],req:true}]},
-  {id:"stress_rel",group:"Stress",parent:"stress_high",period:"the moment",reads:["stress","stressWhy"],
+  {id:"stress_rel",anchor:"stress",group:"Stress",parent:"stress_high",period:"the moment",reads:["stress","stressWhy"],
    cond:"a stress source you picked is 'relationships'",
    test:()=>touched.stress&&draft.stress>=7&&has(fu("stressWhy"),"relationships"),
    qs:()=>[{field:"relationWho",label:"Which relationship",type:"check",q:"Which relationship(s)?",opts:REL_WHO}]},
-  {id:"energy_low",group:"Energy",period:"the moment",reads:["energy"],
+  {id:"energy_low",anchor:"energy",group:"Energy",period:"the moment",reads:["energy"],
    cond:"energy is 3 or below",
    test:()=>touched.energy&&draft.energy<=3,
    qs:()=>[{field:"energyWhy",label:"What's draining energy",type:"check",q:"What's likely draining your energy right now?",opts:ENERGY_WHY,req:true}]},
-  {id:"neg_emo",group:"Emotions",period:"the moment",reads:["emotions"],
+  {id:"neg_emo",anchor:"emotions",group:"Emotions",period:"the moment",reads:["emotions"],
    cond:`you picked a negative emotion (${NEG_EMO.join(", ")})`,
    test:()=>hasAny(draft.emotions,NEG_EMO),
    qs:()=>[{field:"emotionTrigger",label:"What set off the emotion",type:"check",q:"What set off that feeling?",opts:TRIGGERS}]},
-  {id:"body_pain",group:"Body",period:"the moment",reads:["body"],
+  {id:"body_pain",anchor:"body",group:"Body",period:"the moment",reads:["body"],
    cond:`body includes ${PAIN_BODY.join(" or ")}`,
    test:()=>hasAny(draft.body,PAIN_BODY),
    qs:()=>[{field:"discomfort",label:"Discomfort intensity",type:"radio",q:"How intense is the discomfort right now?",opts:["mild","moderate","severe"]}]},
-  {id:"food",group:"Food",period:"the 3 hours before this entry",reads:["energy","body"],
+  {id:"food",anchor:"body",group:"Food",period:"the 3 hours before this entry",reads:["energy","body"],
    cond:`energy is 4 or below, or body includes ${FOOD_BODY.join(", ")}`,
    test:()=>(touched.energy&&draft.energy<=4)||hasAny(draft.body,FOOD_BODY),
    qs:()=>[{field:"ate",label:"Ate in the previous 3 hours",type:"radio",q:"Had you eaten in the 3 hours before this entry?",opts:["yes","no"]}]},
   // Fixed-schedule rule: always true, so it is asked on every entry and Insights can compare fairly.
-  {id:"context",group:"Context",period:"the moment",reads:[],
+  {id:"context",anchor:"context",group:"Context",period:"the moment",reads:[],
    cond:"it is a fixed question asked on every entry",
    test:()=>true,
    qs:()=>[{field:"location",label:"Location",type:"radio",q:"Where are you right now?",opts:LOCATIONS,req:true},
@@ -270,7 +272,7 @@ function visibleProfile(){
   return out;
 }
 /* =====================================================================
-   STEP 1 ADAPTATION. The step 1 questions themselves never change (same sliders, same
+   OVERVIEW ADAPTATION. The overview questions themselves never change (same sliders, same
    instant-only wording), but the profile can reorder and extend the emotion/body choices.
      why   shown to you ("Tailored because ...")
      test  (profile answers) => boolean
@@ -315,7 +317,7 @@ function activeQs(){
   const out=[];
   RULES.forEach(r=>{
     if(!r.test())return;
-    r.qs().forEach((q,i)=>out.push({...q,id:"q:"+q.field,group:r.group,ruleId:r.id,period:r.period,why:i===0?r.cond:null,req:!!q.req}));
+    r.qs().forEach((q,i)=>out.push({...q,id:"q:"+q.field,group:r.group,ruleId:r.id,anchor:r.anchor,d:r.parent?2:1,period:r.period,why:(i===0&&r.anchor!=="context")?r.cond:null,req:!!q.req}));
   });
   return out;
 }
@@ -374,13 +376,12 @@ function askText(label,ok){
 /* ---------- state ---------- */
 let db = load();
 let tab = "log";
-let step = "core";      // "core" = overview, "follow" = generated follow-ups
 let touched = {};
 let draft = newDraft();
 let editingProfile = false;
 let profDraft = {};
 function newDraft(){return {mood:5,energy:5,stress:5,emotions:[],body:[],fu:{},ts:null};}
-function resetDraft(){touched={};step="core";draft=newDraft();}
+function resetDraft(){touched={};draft=newDraft();}
 
 /* ---------- stats ---------- */
 const mean=a=>a.reduce((s,x)=>s+x,0)/a.length;
@@ -405,16 +406,19 @@ function qControl(q){
   if(q.type==="check")return q.opts.map(o=>opt("checkbox","",`data-q="${id}"`,o,cur.includes(o))).join("");
   return q.opts.map(o=>opt("radio",q.id,`data-q="${id}"`,o,cur===o,q.labels&&q.labels[o])).join("");
 }
-function followupsHTML(){
-  const qs=activeQs();
-  if(!qs.length)return `<p>No follow-up questions apply to this entry. You can save now.</p>`;
+function followupsHTML(anchor){
+  const qs=activeQs().filter(q=>q.anchor===anchor);
+  if(!qs.length)return "";
   let h="",group=null;
   qs.forEach(q=>{
     if(q.group!==group){if(group!==null)h+=`</fieldset>`;h+=`<fieldset><legend><b>${esc(q.group)}</b></legend>`;group=q.group;}
-    h+=`<p>${q.why?`<small>Asked because ${esc(q.why)}. Covers: ${esc(q.period)}.</small><br>`:""}${esc(q.q)}${q.req?"":" (optional)"}<br>${qControl(q)}</p>`;
+    const d=anchor==="context"?0:q.d;
+    h+="<blockquote>".repeat(d)+`<p>${q.why?`<small>Asked because ${esc(q.why)}.</small><br>`:""}<small>Covers: ${esc(q.period)}.</small><br>${esc(q.q)}${q.req?" (required)":" (optional)"}<br>${qControl(q)}</p>`+"</blockquote>".repeat(d);
   });
   return h+`</fieldset>`;
 }
+const fuBox=a=>`<div id="fu_${a}">${followupsHTML(a)}</div>`;
+function fuCountText(){const qs=activeQs(),req=qs.filter(q=>q.req).length;return `${qs.length} follow-up question${qs.length===1?"":"s"} showing (${req} required). More can appear as you answer.`;}
 
 /* ---------- views ---------- */
 function render(){
@@ -423,7 +427,7 @@ function render(){
   document.getElementById("banner").innerHTML=storageOK?"":box("<b>Browser storage is not available here.</b> Entries are kept only until you close this page. Open this file in your regular browser (Chrome or Safari), or export a backup from the Data tab often.");
   document.getElementById("app").innerHTML=({log:viewLog,history:viewHistory,insights:viewInsights,logic:viewLogic,data:viewData})[tab]();
 }
-const viewLog=()=>(!profileDone()||editingProfile)?viewProfile():(step==="core"?viewOverview():viewFollow());
+const viewLog=()=>(!profileDone()||editingProfile)?viewProfile():viewEntry();
 
 const pVal=q=>{const v=profDraft[q.field];return v==null?(q.type==="check"?[]:""):v;};
 function pControl(q){
@@ -484,28 +488,30 @@ function pickRows(field,list,extra,promoted,cur){
   const top=promoted.filter(x=>all.includes(x)),rest=all.filter(x=>!top.includes(x));
   return top.length?`<small>Suggested for you:</small><br>${checks(field,top,cur)}<br><small>Everything else:</small><br>${checks(field,rest,cur)}`:checks(field,all,cur);
 }
-function viewOverview(){
+function viewEntry(){
   const ad=adaptation();
-  const sl=(k,l)=>`<p><label>${l}: <b id="v_${k}">${touched[k]?draft[k]:"not set"}</b> <small id="d_${k}">${esc(deltaText(k))}</small><br><input type="range" min="1" max="10" step="1" value="${draft[k]}" data-s="${k}"></label></p>`;
+  const sl=(k,l)=>`<p><label>${l}: <b id="v_${k}">${touched[k]?draft[k]:"not set"}</b> <small id="d_${k}">${esc(deltaText(k))}</small><br><input type="range" min="1" max="10" step="1" value="${draft[k]}" data-s="${k}"></label></p>${fuBox(k)}`;
   return `<h1>New entry</h1>
-  <p>Step 1 of 2: overview. These questions are about <b>this exact moment, right now</b>. Nothing here looks back over a past period. The entry is stamped with the time you press Next, and that time can't be changed. Each follow-up question in step 2 says what period it covers. <button data-tab="logic">How it works</button></p>
+  <p>The overview questions are about <b>this exact moment, right now</b>; they never look back. Follow-up questions appear right under the answer that triggers them, and each says what period it covers. The entry is stamped the first time you answer anything below, and that time can't be changed. <button data-tab="logic">How it works</button></p>
+  <p><small id="stamp">${stampText()}</small></p>
   <fieldset><legend>How do you feel right now?</legend>
   ${sl("mood","Mood right now (1 awful, 10 great)")}${sl("energy","Energy right now (1 drained, 10 energized)")}${sl("stress","Stress right now (1 calm, 10 extreme)")}
   <p>Emotions right now (pick any):<br>${pickRows("emotions",db.emotions,ad.addEmotions,ad.emotions,draft.emotions)} <button id="addEmo">+ add</button></p>
+  ${fuBox("emotions")}
   <p>Body right now (pick any):<br>${pickRows("body",db.body,ad.addBody,ad.body,draft.body)} <button id="addBody">+ add</button></p>
+  ${fuBox("body")}
   ${ad.reasons.length?`<p><small>Options tailored from your profile because: ${esc(ad.reasons.join("; "))}. This only changes which choices are listed first. See the Logic tab.</small></p>`:""}
   </fieldset>
-  <p><button id="nextBtn">Next: follow-up questions</button></p>
+  ${fuBox("context")}
+  <p><small id="fuCount">${fuCountText()}</small></p>
+  <p><button id="saveBtn">Save entry</button> <button id="clearBtn">Clear form</button></p>
   <p>${db.entries.length} entries so far.</p>`;
 }
-function viewFollow(){
-  const qs=activeQs(),req=qs.filter(q=>q.req).length;
-  const summary=[`mood ${draft.mood}`,`energy ${draft.energy}`,`stress ${draft.stress}`,draft.emotions.join(", "),draft.body.join(", ")].filter(Boolean).join(" · ");
-  return `<h1>Follow-up questions</h1>
-  <p>Step 2 of 2. Overview recorded at ${esc(fmtDT(new Date(draft.ts)))}: ${esc(summary)}</p>
-  <p>${qs.length} question${qs.length===1?"":"s"} chosen from your answers (${req} required; the rest are marked optional). More can appear as you answer. <button data-tab="logic">How are these chosen?</button></p>
-  <div id="fu">${followupsHTML()}</div>
-  <p><button id="backBtn">Back</button> <button id="saveBtn">Save entry</button></p>`;
+const stampText=()=>draft.ts?`Entry time: ${fmtDT(new Date(draft.ts))} (fixed).`:"The entry time is fixed the first time you answer below.";
+function stampDraft(){
+  if(draft.ts)return;
+  draft.ts=new Date().toISOString();
+  const e=document.getElementById("stamp");if(e)e.textContent=stampText();
 }
 
 function viewHistory(){
@@ -539,41 +545,40 @@ function viewLogic(){
     return `<tr><td>${esc(name)}</td><td>${rs.length?rs.map(r=>`${esc(r.cond)} &rarr; ${esc(r.group)}${on(r)?" <i>(active now)</i>":""}`).join("<br>"):"(no rule reads this yet)"}</td></tr>`;
   }).join("");
   return `<h1>How questions are chosen</h1>
-  <p>After the one-time profile, every entry has two steps. Step 1 is an overview of how you are right now: its questions are fixed, but the order and extras of its emotion and body choices adapt to your profile. Step 2 is a set of follow-ups chosen by the rules below, using your step 1 answers (and, for deeper follow-ups, your earlier follow-up answers). This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
+  <p>After the one-time profile, every entry is one page. The overview of how you are right now is always asked (its questions are fixed, but the order and extras of its emotion and body choices adapt to your profile). Follow-ups are chosen by the rules below and appear inline, right under the overview answer that triggers them, the same way the profile branches. Deeper follow-ups can depend on your earlier follow-up answers. This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
 
   <h2>Flowchart</h2>
 <pre style="white-space:pre-wrap">+-----------------------------+
-| STEP 0: GETTING TO KNOW YOU |
-| asked once, before the      |
-| first entry. Required ones  |
-| must be answered. Editable  |
-| later on the Data tab.      |
+| PROFILE (once)              |
+| required ones must be       |
+| answered; editable on the   |
+| Data tab                    |
 +--------------+--------------+
                | [Save and start logging]
                v
 +-----------------------------+
-| STEP 1: OVERVIEW            |
-| this instant only, no       |
-| look-back:                  |
+| ENTRY (one page)            |
+| overview, this instant only:|
 | mood, energy, stress,       |
 | emotions, body              |
+|   |                         |
+|   +--> rules run after every|
+|        answer; matching     |
+|        follow-ups appear    |
+|        right under the      |
+|        answer, and an answer|
+|        can open deeper ones |
+| fixed Context questions at  |
+| the end                     |
 +--------------+--------------+
-               | [Next]
-               | entry stamped now
-               v
-+-----------------------------+
-| STEP 2: RULES RUN           |&lt;---+
-| each rule whose IF is true  |    |
-| adds its questions          |    | an answer can
-+--------------+--------------+    | unlock deeper
-               |-------------------+ follow-ups
-               | [Save]
+               | [Save entry]
+               | stamped at your first answer
                v
 +-----------------------------+
 | SAVE                        |
 | required (*) must be filled |
-| only questions that were    |
-| active are stored           |
+| only visible questions are  |
+| stored                      |
 +-----------------------------+</pre>
 
   <h2>Step 0: getting to know you</h2>
@@ -584,14 +589,14 @@ function viewLogic(){
   </details>
   <h2>What time does an entry cover?</h2>
   <ul>
-  <li><b>Step 1</b> covers one instant: the moment you press Next. It can't be changed or back-dated, and it asks nothing about the past.</li>
-  <li><b>Step 2</b> questions each name their own period, shown here and above the question when it appears.</li>
+  <li><b>The overview</b> covers one instant: the moment you first answer on the entry page. It can't be changed or back-dated, and it asks nothing about the past.</li>
+  <li><b>Follow-ups</b> each name their own period, shown here and above the question when it appears.</li>
   </ul>
   ${T}<tr><th>Follow-up group</th><th>Period it covers</th></tr>${RULES.map(r=>`<tr><td>${esc(r.group)}${r.parent?" (deeper)":""}</td><td>${esc(r.period)}</td></tr>`).join("")}</table>
 
-  <h2>Step 1: always asked</h2>
+  <h2>Overview: always asked</h2>
   <ul><li>Mood, energy, stress (1-10; you must set each). After you set one, it shows how far it is from your usual value from the profile. The usual value is hidden until you rate, so it doesn't anchor you.</li><li>Emotions right now (any)</li><li>Body sensations right now (any)</li></ul>
-  <h3>How the profile tailors Step 1</h3>
+  <h3>How the profile tailors the overview</h3>
   <p>The same questions are always asked. The profile only moves some choices into a "Suggested for you" row and can add a few body options. It never hides a choice, never changes the follow-up rules, and the stored data looks the same. Added options (chronic pain locations) count as body pain for the discomfort follow-up.</p>
   ${T}<tr><th>Profile says</th><th>Suggested emotions</th><th>Suggested body</th><th>Adds</th></tr>${OVERVIEW_ADAPT.map(r=>{let f={};try{f=profileDone()?r.fx(db.profile.answers):r.fx({});}catch(e){}
     const ac=profileDone()&&r.test(db.profile.answers);
@@ -600,17 +605,18 @@ function viewLogic(){
   <h2>Which answers feed which rules</h2>
   ${T}<tr><th>Answer</th><th>Rules that read it</th></tr>${feeds}</table>
 
-  <h2>Step 2: rules as an outline</h2>
+  <h2>Follow-up rules as an outline</h2>
   <p>Checked top to bottom after every answer. Indented rules fire only after their parent applies and you give the answer they depend on. * = required to save. "Active now" marks rules that currently apply to the entry you are drafting.</p>
   ${tree()}
 
   <h2>Why it works this way</h2>
   <ul>
+  <li><b>Where follow-ups appear.</b> Each rule has an <code>anchor</code>; its questions show directly under that overview answer (mood, energy, stress, emotions, body), and the fixed Context questions sit at the end.</li>
   <li><b>Required vs. optional.</b> Reasons behind extreme ratings, and the fixed Context questions (location, who you're with), are required; everything else can be skipped.</li>
   <li><b>Thresholds.</b> Extreme means mood 4 or below or 8 or above, stress 7 or above, and energy 3 or below. Ratings are subjective, so these are rough cut-offs.</li>
   <li><b>Fixed-schedule questions.</b> Context is asked on every entry regardless of how you feel, so comparisons (e.g. mood at work vs. at home) are not biased by only asking when you feel bad. Sleep, caffeine and alcohol should be added the same way (a rule whose test always returns true, or true on the first entry of each day).</li>
   <li><b>Missing data.</b> A follow-up exists only for entries where its rule fired. Insights tables therefore compare only entries where the question was asked.</li>
-  <li><b>Changing your mind.</b> Use Back to edit step 1. Answers to questions that no longer apply are dropped when you save.</li>
+  <li><b>Changing your mind.</b> Just change an overview answer: follow-ups that no longer apply disappear, and their answers are dropped when you save (they come back if you re-select).</li>
   <li><b>Custom emotions or body items</b> you add do not trigger any rule, because the app can't know how you would rate them.</li>
   <li><b>Adding follow-ups.</b> Each new rule added to the table appears on this page, in Insights, and in the CSV export automatically.</li>
   </ul>`;
@@ -686,16 +692,10 @@ function viewData(){
 }
 
 /* ---------- saving ---------- */
-function goFollow(){
-  const miss=METRICS.filter(k=>!touched[k]).map(k=>`set ${k}`);
-  if(miss.length){status(`<p><b>Please complete:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
-  draft.ts=new Date().toISOString();   // the instant the overview describes
-  status("");step="follow";render();window.scrollTo(0,0);
-}
 function saveEntry(){
-  const qs=activeQs(),miss=[];
+  const qs=activeQs(),miss=METRICS.filter(k=>!touched[k]).map(k=>`Set ${k} right now`);
   qs.forEach(q=>{if(!q.req)return;const v=getVal(q);if(q.type==="check"?!v.length:v==="")miss.push(q.q);});
-  if(miss.length){status(`<p><b>Please answer:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
+  if(miss.length||!draft.ts){status(`<p><b>Please complete:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
   const out={};
   qs.forEach(q=>{const v=getVal(q);if(Array.isArray(v)?v.length:v!=="")out[q.field]=Array.isArray(v)?v.slice():(q.type==="number"?Number(v):v);});
   db.entries.push({id:Date.now(),ts:draft.ts,savedAt:new Date().toISOString(),mood:draft.mood,energy:draft.energy,stress:draft.stress,
@@ -725,8 +725,8 @@ function exportEntries(stamp){
 
 /* ---------- events (delegated) ---------- */
 const app=document.getElementById("app");
-const setSlider=t=>{const k=t.dataset.s;draft[k]=+t.value;touched[k]=true;const l=document.getElementById("v_"+k);if(l)l.textContent=t.value;const dl=document.getElementById("d_"+k);if(dl)dl.textContent=deltaText(k);};
-const refreshFU=()=>{const f=document.getElementById("fu");if(f)f.innerHTML=followupsHTML();};
+const setSlider=t=>{stampDraft();const k=t.dataset.s;draft[k]=+t.value;touched[k]=true;const l=document.getElementById("v_"+k);if(l)l.textContent=t.value;const dl=document.getElementById("d_"+k);if(dl)dl.textContent=deltaText(k);};
+const refreshFU=()=>{ANCHORS.forEach(a=>{const f=document.getElementById("fu_"+a);if(f)f.innerHTML=followupsHTML(a);});const c=document.getElementById("fuCount");if(c)c.textContent=fuCountText();};
 const findQ=id=>activeQs().find(x=>x.id===id);
 
 app.addEventListener("input",e=>{
@@ -737,9 +737,9 @@ app.addEventListener("input",e=>{
 });
 app.addEventListener("change",async e=>{
   const t=e.target,ds=t.dataset;
-  if(ds.s){setSlider(t);return;}
+  if(ds.s){setSlider(t);refreshFU();return;}
   if(ds.q){
-    const x=findQ(ds.q);if(!x)return;
+    const x=findQ(ds.q);if(!x)return;stampDraft();
     if(x.type==="check"){const a=getVal(x);setVal(x,t.checked?[...a,t.value]:a.filter(v=>v!==t.value));refreshFU();}
     else if(x.type==="radio"){setVal(x,t.value);refreshFU();}
     else setVal(x,t.value);
@@ -750,7 +750,7 @@ app.addEventListener("change",async e=>{
     else profDraft[x.field]=t.value;
     refreshProfile();
     return;}
-  if(ds.c){const a=draft[ds.c];draft[ds.c]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);return;}
+  if(ds.c){stampDraft();const a=draft[ds.c];draft[ds.c]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);refreshFU();return;}
   if(t.id==="file"){
     try{tryImport(await t.files[0].text());}catch(err){say("Could not read that file.");}
   }
@@ -769,7 +769,7 @@ function tryImport(text){
 document.addEventListener("click",e=>{
   const t=e.target,ds=t.dataset||{};
   if(ds.tab){tab=ds.tab;render();window.scrollTo(0,0);return;}
-  if(ds.s){setSlider(t);return;}   // counts a tap on the current value
+  if(ds.s){setSlider(t);refreshFU();return;}   // counts a tap on the current value
   if(ds.dlg){
     const p=pending,v=(document.getElementById("dlgText")||{}).value;
     closeDlg();
@@ -783,11 +783,10 @@ document.addEventListener("click",e=>{
   switch(t.id){
     case "addEmo":addTo("emotions","emotion");break;
     case "addBody":addTo("body","body sensation");break;
-    case "nextBtn":goFollow();break;
     case "profSave":saveProfile();break;
     case "profCancel":editingProfile=false;profDraft={};status("");render();window.scrollTo(0,0);break;
     case "editProfile":editingProfile=true;profDraft=db.profile?JSON.parse(JSON.stringify(db.profile.answers)):{};tab="log";status("");render();window.scrollTo(0,0);break;
-    case "backBtn":step="core";status("");render();window.scrollTo(0,0);break;
+    case "clearBtn":resetDraft();status("");render();window.scrollTo(0,0);break;
     case "saveBtn":saveEntry();break;
     case "expCsv":exportEntries(stamp);break;
     case "expJson":download(`lifelog2-backup-${stamp}.json`,JSON.stringify(db,null,1),"application/json");break;
