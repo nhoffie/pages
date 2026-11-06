@@ -94,6 +94,38 @@ const RULES = [
 
 // every follow-up question, once per field (drives Insights tables and CSV columns)
 const ALL_QS=(()=>{const m=new Map();RULES.forEach(r=>r.qs().forEach(q=>{if(!m.has(q.field))m.set(q.field,{...q,group:r.group,ruleId:r.id});}));return [...m.values()];})();
+/* =====================================================================
+   STEP 0 (profile) is asked once, before the first entry can be created.
+   It is context about you, not a moment in time. Edit it later from the Data tab.
+   HOW TO ADD A PROFILE QUESTION: add one object here.
+     field, group (heading), q (text), type radio|check|number, opts, period, req
+   ===================================================================== */
+const PROFILE_QS=[
+  {field:"goals",group:"What you want from this",type:"check",req:true,period:"going forward",q:"What do you most want to learn from logging?",
+   opts:["what affects my mood","what causes my stress","what affects my energy","how my activities make me feel","how sleep affects me","how my body and mood connect","tracking a health or mental-health condition","just curious"]},
+  {field:"daily",group:"Your life",type:"radio",req:true,period:"a typical week",q:"What fills most of your weekdays?",
+   opts:["work","school","work and school","caregiving / home","neither right now","varies a lot"]},
+  {field:"living",group:"Your life",type:"radio",period:"currently",q:"Who do you live with?",
+   opts:["alone","partner","family","roommates","other"]},
+  {field:"baseMood",group:"Your usual baseline (1-10)",type:"number",period:"a typical day lately",q:"On a typical day, how is your mood? (1 awful, 10 great)"},
+  {field:"baseEnergy",group:"Your usual baseline (1-10)",type:"number",period:"a typical day lately",q:"On a typical day, how is your energy? (1 drained, 10 energized)"},
+  {field:"baseStress",group:"Your usual baseline (1-10)",type:"number",period:"a typical day lately",q:"On a typical day, how is your stress? (1 calm, 10 extreme)"},
+  {field:"sleepTypical",group:"Habits",type:"radio",period:"a typical night lately",q:"How much do you usually sleep per night?",
+   opts:["under 5 hours","5-6 hours","6-7 hours","7-8 hours","8-9 hours","over 9 hours","very irregular"]},
+  {field:"caffeineTypical",group:"Habits",type:"radio",period:"a typical day lately",q:"How much caffeine do you usually have?",
+   opts:["none","1 serving a day","2-3 servings a day","4 or more a day"]},
+  {field:"alcoholTypical",group:"Habits",type:"radio",period:"the last few months",q:"How often do you drink alcohol?",
+   opts:["never","a few times a year","a few times a month","about weekly","several times a week","daily"]},
+  {field:"exercise",group:"Habits",type:"radio",period:"a typical week lately",q:"How often do you exercise?",
+   opts:["rarely","1-2 times a week","3-4 times a week","5 or more times a week"]},
+  {field:"conditions",group:"Health (optional, stays on this device)",type:"check",period:"currently",q:"Does anything affect how you feel day to day?",
+   opts:["anxiety","low mood / depression","ADHD","chronic pain","sleep problems","a medical condition affecting energy","none","prefer not to say"]},
+  {field:"meds",group:"Health (optional, stays on this device)",type:"radio",period:"currently",q:"Do you take medication that may affect mood, energy or sleep?",
+   opts:["yes","no","prefer not to say"]},
+  {field:"logTimes",group:"Logging",type:"check",period:"going forward",q:"When do you expect to log most?",
+   opts:["morning","afternoon","evening","night"]}
+];
+const profileDone=()=>!!(db.profile&&db.profile.done);
 const READ_LABEL={mood:"Mood rating",energy:"Energy rating",stress:"Stress rating",emotions:"Emotions picked",body:"Body sensations picked"};
 const qLabel=f=>(ALL_QS.find(q=>q.field===f)||{}).label||f;
 
@@ -121,6 +153,8 @@ function normalize(d){
     }
   });
   d.entries.sort((x,y)=>String(x.ts)<String(y.ts)?-1:String(x.ts)>String(y.ts)?1:0);
+  const p=d.profile;
+  d.profile=(p&&typeof p==="object"&&p.done&&p.answers&&typeof p.answers==="object")?{done:true,ts:p.ts||null,answers:p.answers}:null;
   return d;
 }
 function load(){
@@ -161,6 +195,8 @@ let tab = "log";
 let step = "core";      // "core" = overview, "follow" = generated follow-ups
 let touched = {};
 let draft = newDraft();
+let editingProfile = false;
+let profDraft = {};
 function newDraft(){return {mood:5,energy:5,stress:5,emotions:[],body:[],fu:{},ts:null};}
 function resetDraft(){touched={};step="core";draft=newDraft();}
 
@@ -205,7 +241,46 @@ function render(){
   document.getElementById("banner").innerHTML=storageOK?"":box("<b>Browser storage is not available here.</b> Entries are kept only until you close this page. Open this file in your regular browser (Chrome or Safari), or export a backup from the Data tab often.");
   document.getElementById("app").innerHTML=({log:viewLog,history:viewHistory,insights:viewInsights,logic:viewLogic,data:viewData})[tab]();
 }
-const viewLog=()=>step==="core"?viewOverview():viewFollow();
+const viewLog=()=>(!profileDone()||editingProfile)?viewProfile():(step==="core"?viewOverview():viewFollow());
+
+const pVal=q=>{const v=profDraft[q.field];return v==null?(q.type==="check"?[]:""):v;};
+function pControl(q){
+  const cur=pVal(q),f=esc(q.field);
+  if(q.type==="number")return `<input type="number" inputmode="numeric" min="1" max="10" step="1" data-p="${f}" value="${esc(cur)}">`;
+  if(q.type==="check")return q.opts.map(o=>opt("checkbox","",`data-p="${f}"`,o,cur.includes(o))).join("");
+  return q.opts.map(o=>opt("radio","p_"+q.field,`data-p="${f}"`,o,cur===o)).join("");
+}
+function viewProfile(){
+  const first=!profileDone();
+  let h=`<h1>${first?"Getting to know you":"Edit your profile"}</h1>
+  <p>${first?"Before your first entry, a few questions about you. ":""}These give context for reading your logs. They are asked once, they are stored only in this browser, and nothing is uploaded. Each question says what period it covers. Only the ones marked required must be answered; skip anything you prefer not to share. You can edit these later on the Data tab.</p>`;
+  let group=null;
+  PROFILE_QS.forEach(q=>{
+    if(q.group!==group){if(group!==null)h+=`</fieldset>`;h+=`<fieldset><legend><b>${esc(q.group)}</b></legend>`;group=q.group;}
+    h+=`<p><small>Covers: ${esc(q.period)}.</small><br>${esc(q.q)}${q.req?" (required)":" (optional)"}<br>${pControl(q)}</p>`;
+  });
+  h+=`</fieldset><p><button id="profSave">${first?"Save and start logging":"Save profile"}</button>${first?"":" <button id=\"profCancel\">Cancel</button>"}</p>`;
+  return h;
+}
+function saveProfile(){
+  const miss=[],answers={};
+  PROFILE_QS.forEach(q=>{
+    const v=pVal(q);
+    const empty=q.type==="check"?!v.length:v==="";
+    if(empty){if(q.req)miss.push(q.q);return;}
+    if(q.type==="number"){
+      const n=Number(v);
+      if(!(n>=1&&n<=10)){miss.push(q.q+" (enter 1-10, or clear it)");return;}
+      answers[q.field]=n;
+    }else answers[q.field]=Array.isArray(v)?v.slice():v;
+  });
+  if(miss.length){status(`<p><b>Please fix:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
+  db.profile={done:true,ts:new Date().toISOString(),answers};
+  const ok=save();
+  editingProfile=false;profDraft={};
+  render();window.scrollTo(0,0);
+  say(ok?"Profile saved.":"Profile kept in memory only: browser storage is unavailable here. Export a backup from the Data tab.");
+}
 
 function viewOverview(){
   const sl=(k,l)=>`<p><label>${l}: <b id="v_${k}">${touched[k]?draft[k]:"not set"}</b><br><input type="range" min="1" max="10" step="1" value="${draft[k]}" data-s="${k}"></label></p>`;
@@ -260,10 +335,19 @@ function viewLogic(){
     return `<tr><td>${esc(name)}</td><td>${rs.length?rs.map(r=>`${esc(r.cond)} &rarr; ${esc(r.group)}${on(r)?" <i>(active now)</i>":""}`).join("<br>"):"(no rule reads this yet)"}</td></tr>`;
   }).join("");
   return `<h1>How questions are chosen</h1>
-  <p>Every entry has two steps. Step 1 is a fixed overview of how you are right now. Step 2 is a set of follow-ups chosen by the rules below, using your step 1 answers (and, for deeper follow-ups, your earlier follow-up answers). This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
+  <p>After the one-time profile, every entry has two steps. Step 1 is a fixed overview of how you are right now. Step 2 is a set of follow-ups chosen by the rules below, using your step 1 answers (and, for deeper follow-ups, your earlier follow-up answers). This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
 
   <h2>Flowchart</h2>
 <pre style="white-space:pre-wrap">+-----------------------------+
+| STEP 0: GETTING TO KNOW YOU |
+| asked once, before the      |
+| first entry. Required ones  |
+| must be answered. Editable  |
+| later on the Data tab.      |
++--------------+--------------+
+               | [Save and start logging]
+               v
++-----------------------------+
 | STEP 1: OVERVIEW            |
 | this instant only, no       |
 | look-back:                  |
@@ -288,6 +372,8 @@ function viewLogic(){
 | active are stored           |
 +-----------------------------+</pre>
 
+  <h2>Step 0: getting to know you</h2>
+  <p>Before your first entry you answer a one-time profile (goals, daily life, usual mood/energy/stress baseline, sleep, caffeine, alcohol and exercise habits, health context, when you plan to log). It is stored in this browser and included in JSON backups, but it is not part of any entry and does not change which follow-ups are asked. Baselines are saved for your own reference and are not yet used in Insights. Profile questions live in the PROFILE_QS table.</p>
   <h2>What time does an entry cover?</h2>
   <ul>
   <li><b>Step 1</b> covers one instant: the moment you press Next. It can't be changed or back-dated, and it asks nothing about the past.</li>
@@ -360,12 +446,21 @@ function viewInsights(){
   return h;
 }
 
+function profileSummary(){
+  if(!profileDone())return `<p>Not filled in yet. You must do this before you can create entries.</p>`;
+  const a=db.profile.answers;
+  const rows=PROFILE_QS.filter(q=>a[q.field]!=null).map(q=>`<li>${esc(q.q)} ${esc(asArr(a[q.field]).join(", "))}</li>`).join("");
+  return rows?`<ul>${rows}</ul>`:`<p>Profile saved with no optional answers.</p>`;
+}
 let outText=null;
 const outHTML=()=>outText?`<h2>${esc(outText.name)}</h2><p>If the file did not download, tap Select all, copy, and paste it into a notes app or file.</p><p><textarea readonly rows="6" cols="30" id="outTa">${esc(outText.text)}</textarea><br><button data-sel="outTa">Select all</button></p>`:"";
 function viewData(){
   const list=(label,key)=>`<h2>${label}</h2><p>${db[key].map(a=>`<label style="white-space:nowrap">${esc(a)} <button data-rl="${key}" data-rm="${esc(a)}">x</button></label> `).join("")}</p>`;
   return `<h1>Your data</h1>
   <p>Everything lives in this browser on this device. Nothing is uploaded. Back up regularly: clearing browser data erases it. LifeLog 2 keeps its data separately from LifeLog 1; a LifeLog 1 backup can be imported here (its follow-up answers carry over, other fields are kept but not shown).</p>
+  <h2>Your profile</h2>
+  ${profileSummary()}
+  <p><button id="editProfile">${profileDone()?"Edit profile":"Fill in profile"}</button></p>
   <p><button id="expCsv">Export entries (CSV)</button></p>
   <p><button id="expJson">Export backup (JSON)</button> <button id="impJson">Import backup file</button>
   <input type="file" id="file" accept=".json" hidden></p>
@@ -425,6 +520,7 @@ app.addEventListener("input",e=>{
   const t=e.target;
   if(t.dataset.s)setSlider(t);
   else if(t.dataset.q){const x=findQ(t.dataset.q);if(x&&x.type==="number")setVal(x,t.value);}
+  else if(t.dataset.p){const x=PROFILE_QS.find(q=>q.field===t.dataset.p);if(x&&x.type==="number")profDraft[x.field]=t.value;}
 });
 app.addEventListener("change",async e=>{
   const t=e.target,ds=t.dataset;
@@ -434,6 +530,11 @@ app.addEventListener("change",async e=>{
     if(x.type==="check"){const a=getVal(x);setVal(x,t.checked?[...a,t.value]:a.filter(v=>v!==t.value));refreshFU();}
     else if(x.type==="radio"){setVal(x,t.value);refreshFU();}
     else setVal(x,t.value);
+    return;}
+  if(ds.p){
+    const x=PROFILE_QS.find(q=>q.field===ds.p);if(!x)return;
+    if(x.type==="check"){const a=pVal(x);profDraft[x.field]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);}
+    else profDraft[x.field]=t.value;
     return;}
   if(ds.c){const a=draft[ds.c];draft[ds.c]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);return;}
   if(t.id==="file"){
@@ -469,6 +570,9 @@ document.addEventListener("click",e=>{
     case "addEmo":addTo("emotions","emotion");break;
     case "addBody":addTo("body","body sensation");break;
     case "nextBtn":goFollow();break;
+    case "profSave":saveProfile();break;
+    case "profCancel":editingProfile=false;profDraft={};status("");render();window.scrollTo(0,0);break;
+    case "editProfile":editingProfile=true;profDraft=db.profile?JSON.parse(JSON.stringify(db.profile.answers)):{};tab="log";status("");render();window.scrollTo(0,0);break;
     case "backBtn":step="core";status("");render();window.scrollTo(0,0);break;
     case "saveBtn":saveEntry();break;
     case "expCsv":exportEntries(stamp);break;
