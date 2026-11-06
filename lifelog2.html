@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LifeLog 2</title>
+</head>
+<body>
+<div id="nav"></div>
+<hr>
+<div id="banner"></div>
+<div id="status"></div>
+<div id="dialog"></div>
+<div id="app"></div>
+<script>
+"use strict";
+const KEY = "lifelog2_v1";   // separate from LifeLog 1, so the two files never overwrite each other
+const DEFAULTS = {
+  emotions: ["happy","calm","content","excited","grateful","focused","anxious","sad","irritable","bored","lonely","overwhelmed","restless","numb"],
+  body: ["relaxed","tense","sleepy","sore","headache","hungry","nauseous","sick","jittery"]
+};
+const METRICS = ["mood","energy","stress"];
+const MOOD_WHY = ["work/school","relationships","family","health/body","sleep","money","weather","a recent event","an upcoming event","no clear reason"];
+const STRESS_WHY = ["work/school","deadlines/time pressure","relationships","money","health","uncertainty","too many demands","no clear reason"];
+const ENERGY_WHY = ["poor sleep","hungry/not eating","long or busy day","illness","boredom","low mood","no clear reason"];
+const REL_WHO = ["partner","family","friends","coworkers","other"];
+const TRIGGERS = ["something someone said or did","a task or deadline","something I read or watched","physical discomfort","worry about the future","dwelling on the past","nothing I can identify"];
+const NEG_EMO = ["anxious","sad","irritable","lonely","overwhelmed","restless","numb"];
+const FOOD_BODY = ["hungry","nauseous","jittery","headache"];
+const PAIN_BODY = ["headache","sore"];
+
+/* =====================================================================
+   STEP 1 (overview) is fixed and only about THIS INSTANT:
+     mood, energy, stress (1-10), emotions, body.  No look-back anywhere in step 1.
+
+   STEP 2 (follow-ups) is the RULES table below. After step 1, every rule whose
+   test() is true adds its questions. Rules are re-checked after each answer,
+   so a follow-up answer can unlock deeper follow-ups (see `parent`).
+
+   HOW TO ADD A FOLLOW-UP: add one object to RULES.
+     id      unique name
+     group   heading shown above the questions
+     period  what time span the question covers (shown to you, and on the Logic tab)
+     reads   which answers the test looks at (used for the "which answers feed which rules" table)
+     parent  (optional) id of the rule this one only makes sense under
+     cond    the IF, in plain words (shown to you, and on the Logic tab)
+     test    function returning true when the rule applies
+     qs      function returning questions: {field, label, type:"radio"|"check"|"number", q, opts, req}
+   The Logic tab, the Insights tables and the CSV columns are all generated from this table.
+   ===================================================================== */
+const has=(arr,x)=>Array.isArray(arr)&&arr.includes(x);
+const hasAny=(arr,xs)=>xs.some(x=>has(arr,x));
+const fu=f=>(draft.fu&&draft.fu[f]);
+
+const RULES = [
+  {id:"mood_extreme",group:"Mood",period:"the moment",reads:["mood"],
+   cond:"mood is 4 or below, or 8 or above",
+   test:()=>touched.mood&&(draft.mood<=4||draft.mood>=8),
+   qs:()=>[{field:"moodWhy",label:"What's behind your mood",type:"check",q:"What's mostly behind your mood right now?",opts:MOOD_WHY,req:true}]},
+  {id:"stress_high",group:"Stress",period:"the moment",reads:["stress"],
+   cond:"stress is 7 or above",
+   test:()=>touched.stress&&draft.stress>=7,
+   qs:()=>[{field:"stressWhy",label:"Source of stress",type:"check",q:"What's the main source of your stress right now?",opts:STRESS_WHY,req:true},
+           {field:"stressControl",label:"Stress manageability",type:"radio",q:"Does the stress feel manageable?",opts:["manageable","borderline","overwhelming"],req:true}]},
+  {id:"stress_rel",group:"Stress",parent:"stress_high",period:"the moment",reads:["stress","stressWhy"],
+   cond:"a stress source you picked is 'relationships'",
+   test:()=>touched.stress&&draft.stress>=7&&has(fu("stressWhy"),"relationships"),
+   qs:()=>[{field:"relationWho",label:"Which relationship",type:"check",q:"Which relationship(s)?",opts:REL_WHO}]},
+  {id:"energy_low",group:"Energy",period:"the moment",reads:["energy"],
+   cond:"energy is 3 or below",
+   test:()=>touched.energy&&draft.energy<=3,
+   qs:()=>[{field:"energyWhy",label:"What's draining energy",type:"check",q:"What's likely draining your energy right now?",opts:ENERGY_WHY,req:true}]},
+  {id:"neg_emo",group:"Emotions",period:"the moment",reads:["emotions"],
+   cond:`you picked a negative emotion (${NEG_EMO.join(", ")})`,
+   test:()=>hasAny(draft.emotions,NEG_EMO),
+   qs:()=>[{field:"emotionTrigger",label:"What set off the emotion",type:"check",q:"What set off that feeling?",opts:TRIGGERS}]},
+  {id:"body_pain",group:"Body",period:"the moment",reads:["body"],
+   cond:`body includes ${PAIN_BODY.join(" or ")}`,
+   test:()=>hasAny(draft.body,PAIN_BODY),
+   qs:()=>[{field:"discomfort",label:"Discomfort intensity",type:"radio",q:"How intense is the discomfort right now?",opts:["mild","moderate","severe"]}]},
+  {id:"food",group:"Food",period:"the 3 hours before this entry",reads:["energy","body"],
+   cond:`energy is 4 or below, or body includes ${FOOD_BODY.join(", ")}`,
+   test:()=>(touched.energy&&draft.energy<=4)||hasAny(draft.body,FOOD_BODY),
+   qs:()=>[{field:"ate",label:"Ate in the previous 3 hours",type:"radio",q:"Had you eaten in the 3 hours before this entry?",opts:["yes","no"]}]}
+];
+
+// every follow-up question, once per field (drives Insights tables and CSV columns)
+const ALL_QS=(()=>{const m=new Map();RULES.forEach(r=>r.qs().forEach(q=>{if(!m.has(q.field))m.set(q.field,{...q,group:r.group,ruleId:r.id});}));return [...m.values()];})();
+const READ_LABEL={mood:"Mood rating",energy:"Energy rating",stress:"Stress rating",emotions:"Emotions picked",body:"Body sensations picked"};
+const qLabel=f=>(ALL_QS.find(q=>q.field===f)||{}).label||f;
+
+function activeQs(){
+  const out=[];
+  RULES.forEach(r=>{
+    if(!r.test())return;
+    r.qs().forEach((q,i)=>out.push({...q,id:"q:"+q.field,group:r.group,ruleId:r.id,period:r.period,why:i===0?r.cond:null,req:!!q.req}));
+  });
+  return out;
+}
+function getVal(q){const v=draft.fu[q.field];return v==null?(q.type==="check"?[]:""):v;}
+function setVal(q,v){draft.fu[q.field]=v;}
+
+/* ---------- storage ---------- */
+const LEGACY_FU=["moodWhy","stressWhy","stressControl","relationWho","energyWhy","emotionTrigger","ate"];   // LifeLog 1 backups import into follow-ups
+function normalize(d){
+  if(!d||!Array.isArray(d.entries))d={entries:[]};
+  for(const k of ["emotions","body"])if(!Array.isArray(d[k]))d[k]=DEFAULTS[k].slice();
+  d.entries.forEach(e=>{
+    ["emotions","body"].forEach(k=>{if(!Array.isArray(e[k]))e[k]=[];});
+    if(!e.fu||typeof e.fu!=="object"){
+      e.fu={};
+      LEGACY_FU.forEach(k=>{const v=e[k];if(v!=null&&v!==""&&!(Array.isArray(v)&&!v.length))e.fu[k]=v;});
+    }
+  });
+  d.entries.sort((x,y)=>String(x.ts)<String(y.ts)?-1:String(x.ts)>String(y.ts)?1:0);
+  return d;
+}
+function load(){
+  let d=null;
+  try{const r=localStorage.getItem(KEY);if(r)d=JSON.parse(r);}catch(e){}
+  return normalize(d);
+}
+let storageOK=true;
+try{localStorage.setItem("__lifelog2_test","1");localStorage.removeItem("__lifelog2_test");}catch(e){storageOK=false;}
+function save(){
+  if(!storageOK)return false;
+  try{localStorage.setItem(KEY,JSON.stringify(db));return true;}catch(e){storageOK=false;return false;}
+}
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
+
+/* In-page messages and confirmations. Some viewers block alert/confirm/prompt, so none are used. */
+let pending=null;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const box=h=>`<div style="border:1px solid;padding:6px;margin:6px 0">${h}</div>`;
+function status(h){document.getElementById("status").innerHTML=h?box(`${h}<p><button data-x="status">Dismiss</button></p>`):"";if(h)window.scrollTo(0,0);}
+const say=m=>status(`<p>${esc(m)}</p>`);
+function closeDlg(){pending=null;document.getElementById("dialog").innerHTML="";}
+function ask(text,yes){
+  pending={yes};
+  document.getElementById("dialog").innerHTML=box(`<p>${esc(text)}</p><button data-dlg="yes">Yes</button> <button data-dlg="no">Cancel</button>`);
+  window.scrollTo(0,0);
+}
+function askText(label,ok){
+  pending={ok};
+  document.getElementById("dialog").innerHTML=box(`<p><label>${esc(label)}<br><input type="text" id="dlgText"></label></p><button data-dlg="ok">Add</button> <button data-dlg="no">Cancel</button>`);
+  window.scrollTo(0,0);
+  const i=document.getElementById("dlgText");if(i)i.focus();
+}
+
+/* ---------- state ---------- */
+let db = load();
+let tab = "log";
+let step = "core";      // "core" = overview, "follow" = generated follow-ups
+let touched = {};
+let draft = newDraft();
+function newDraft(){return {mood:5,energy:5,stress:5,emotions:[],body:[],fu:{},ts:null};}
+function resetDraft(){touched={};step="core";draft=newDraft();}
+
+/* ---------- stats ---------- */
+const mean=a=>a.reduce((s,x)=>s+x,0)/a.length;
+function pearson(xs,ys){
+  const n=xs.length;if(n<3)return null;
+  const mx=mean(xs),my=mean(ys);let sxy=0,sxx=0,syy=0;
+  for(let i=0;i<n;i++){const dx=xs[i]-mx,dy=ys[i]-my;sxy+=dx*dy;sxx+=dx*dx;syy+=dy*dy;}
+  return sxx&&syy?sxy/Math.sqrt(sxx*syy):null;
+}
+const f1=x=>x==null?"-":x.toFixed(1);
+const asArr=v=>Array.isArray(v)?v:(v==null||v===""?[]:[String(v)]);
+const fmtDT=d=>d.toLocaleString(undefined,{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+
+/* ---------- form helpers ---------- */
+const opt=(type,name,attrs,val,checked,label)=>
+  `<label style="white-space:nowrap"><input type="${type}" ${name?`name="${esc(name)}" `:""}${attrs} value="${esc(val)}" ${checked?"checked":""}> ${esc(label??val)}</label> `;
+const checks=(field,opts,cur)=>opts.map(o=>opt("checkbox","",`data-c="${field}"`,o,cur.includes(o))).join("");
+
+function qControl(q){
+  const cur=getVal(q),id=esc(q.id);
+  if(q.type==="number")return `<input type="number" inputmode="decimal" step="any" data-q="${id}" value="${esc(cur)}">`;
+  if(q.type==="check")return q.opts.map(o=>opt("checkbox","",`data-q="${id}"`,o,cur.includes(o))).join("");
+  return q.opts.map(o=>opt("radio",q.id,`data-q="${id}"`,o,cur===o,q.labels&&q.labels[o])).join("");
+}
+function followupsHTML(){
+  const qs=activeQs();
+  if(!qs.length)return `<p>No follow-up questions apply to this entry. You can save now.</p>`;
+  let h="",group=null;
+  qs.forEach(q=>{
+    if(q.group!==group){if(group!==null)h+=`</fieldset>`;h+=`<fieldset><legend><b>${esc(q.group)}</b></legend>`;group=q.group;}
+    h+=`<p>${q.why?`<small>Asked because ${esc(q.why)}. Covers: ${esc(q.period)}.</small><br>`:""}${esc(q.q)}${q.req?"":" (optional)"}<br>${qControl(q)}</p>`;
+  });
+  return h+`</fieldset>`;
+}
+
+/* ---------- views ---------- */
+function render(){
+  const tabs=[["log","Log"],["history","History"],["insights","Insights"],["logic","Logic"],["data","Data"]];
+  document.getElementById("nav").innerHTML=tabs.map(([k,l])=>tab===k?`<b>[${l}]</b>`:`<button data-tab="${k}">${l}</button>`).join(" ");
+  document.getElementById("banner").innerHTML=storageOK?"":box("<b>Browser storage is not available here.</b> Entries are kept only until you close this page. Open this file in your regular browser (Chrome or Safari), or export a backup from the Data tab often.");
+  document.getElementById("app").innerHTML=({log:viewLog,history:viewHistory,insights:viewInsights,logic:viewLogic,data:viewData})[tab]();
+}
+const viewLog=()=>step==="core"?viewOverview():viewFollow();
+
+function viewOverview(){
+  const sl=(k,l)=>`<p><label>${l}: <b id="v_${k}">${touched[k]?draft[k]:"not set"}</b><br><input type="range" min="1" max="10" step="1" value="${draft[k]}" data-s="${k}"></label></p>`;
+  return `<h1>New entry</h1>
+  <p>Step 1 of 2: overview. These questions are about <b>this exact moment, right now</b>. Nothing here looks back over a past period. The entry is stamped with the time you press Next, and that time can't be changed. Each follow-up question in step 2 says what period it covers. <button data-tab="logic">How it works</button></p>
+  <fieldset><legend>How do you feel right now?</legend>
+  ${sl("mood","Mood right now (1 awful, 10 great)")}${sl("energy","Energy right now (1 drained, 10 energized)")}${sl("stress","Stress right now (1 calm, 10 extreme)")}
+  <p>Emotions right now (pick any):<br>${checks("emotions",db.emotions,draft.emotions)}<button id="addEmo">+ add</button></p>
+  <p>Body right now (pick any):<br>${checks("body",db.body,draft.body)}<button id="addBody">+ add</button></p>
+  </fieldset>
+  <p><button id="nextBtn">Next: follow-up questions</button></p>
+  <p>${db.entries.length} entries so far.</p>`;
+}
+function viewFollow(){
+  const qs=activeQs(),req=qs.filter(q=>q.req).length;
+  const summary=[`mood ${draft.mood}`,`energy ${draft.energy}`,`stress ${draft.stress}`,draft.emotions.join(", "),draft.body.join(", ")].filter(Boolean).join(" · ");
+  return `<h1>Follow-up questions</h1>
+  <p>Step 2 of 2. Overview recorded at ${esc(fmtDT(new Date(draft.ts)))}: ${esc(summary)}</p>
+  <p>${qs.length} question${qs.length===1?"":"s"} chosen from your answers (${req} required; the rest are marked optional). More can appear as you answer. <button data-tab="logic">How are these chosen?</button></p>
+  <div id="fu">${followupsHTML()}</div>
+  <p><button id="backBtn">Back</button> <button id="saveBtn">Save entry</button></p>`;
+}
+
+function viewHistory(){
+  const es=db.entries.slice().reverse();
+  if(!es.length)return `<h1>History</h1><p>No entries yet.</p>`;
+  return `<h1>History</h1><p>Showing the latest ${Math.min(es.length,100)} of ${es.length}.</p><ul>`+es.slice(0,100).map(e=>{
+    const d=new Date(e.ts);
+    const feel=[...e.emotions,...e.body].join(", ");
+    const extra=Object.entries(e.fu||{}).map(([k,v])=>`${qLabel(k)}: ${asArr(v).join(", ")}`).join("; ");
+    return `<li>${esc(fmtDT(d))}: mood ${e.mood}, energy ${e.energy}, stress ${e.stress}
+    ${feel?"<br>"+esc(feel):""}${extra?"<br>"+esc(extra):""}
+    <br><button data-del="${e.id}">Delete</button></li><br>`;}).join("")+`</ul>`;
+}
+
+/* ---------- Logic tab (generated from RULES) ---------- */
+function viewLogic(){
+  const T=`<table border="1" cellpadding="4" cellspacing="0">`;
+  const docQs=r=>r.qs().map(q=>esc(q.q)+(q.req?" *":"")).join("; ");
+  const on=r=>!!r.test();
+  const tree=()=>{
+    const kids=pid=>RULES.filter(r=>r.parent===pid);
+    const li=r=>{const k=kids(r.id);
+      return `<li><b>IF</b> ${esc(r.cond)}${on(r)?" <i>(active now)</i>":""}<br><b>ASK</b> ${docQs(r)}${k.length?`<ul>${k.map(li).join("")}</ul>`:""}</li>`;};
+    return `<ul>${RULES.filter(r=>!r.parent).map(li).join("")}</ul>`;
+  };
+  const used=[...new Set(RULES.flatMap(r=>r.reads))];
+  const keys=[...Object.keys(READ_LABEL),...used.filter(k=>!(k in READ_LABEL))];
+  const feeds=keys.map(k=>{
+    const rs=RULES.filter(r=>r.reads.includes(k));
+    const name=k in READ_LABEL?READ_LABEL[k]:"Follow-up answer: "+qLabel(k);
+    return `<tr><td>${esc(name)}</td><td>${rs.length?rs.map(r=>`${esc(r.cond)} &rarr; ${esc(r.group)}${on(r)?" <i>(active now)</i>":""}`).join("<br>"):"(no rule reads this yet)"}</td></tr>`;
+  }).join("");
+  return `<h1>How questions are chosen</h1>
+  <p>Every entry has two steps. Step 1 is a fixed overview of how you are right now. Step 2 is a set of follow-ups chosen by the rules below, using your step 1 answers (and, for deeper follow-ups, your earlier follow-up answers). This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
+
+  <h2>Flowchart</h2>
+<pre style="white-space:pre-wrap">+-----------------------------+
+| STEP 1: OVERVIEW            |
+| this instant only, no       |
+| look-back:                  |
+| mood, energy, stress,       |
+| emotions, body              |
++--------------+--------------+
+               | [Next]
+               | entry stamped now
+               v
++-----------------------------+
+| STEP 2: RULES RUN           |&lt;---+
+| each rule whose IF is true  |    |
+| adds its questions          |    | an answer can
++--------------+--------------+    | unlock deeper
+               |-------------------+ follow-ups
+               | [Save]
+               v
++-----------------------------+
+| SAVE                        |
+| required (*) must be filled |
+| only questions that were    |
+| active are stored           |
++-----------------------------+</pre>
+
+  <h2>What time does an entry cover?</h2>
+  <ul>
+  <li><b>Step 1</b> covers one instant: the moment you press Next. It can't be changed or back-dated, and it asks nothing about the past.</li>
+  <li><b>Step 2</b> questions each name their own period, shown here and above the question when it appears.</li>
+  </ul>
+  ${T}<tr><th>Follow-up group</th><th>Period it covers</th></tr>${RULES.map(r=>`<tr><td>${esc(r.group)}${r.parent?" (deeper)":""}</td><td>${esc(r.period)}</td></tr>`).join("")}</table>
+
+  <h2>Step 1: always asked</h2>
+  <ul><li>Mood, energy, stress (1-10; you must set each)</li><li>Emotions right now (any)</li><li>Body sensations right now (any)</li></ul>
+
+  <h2>Which answers feed which rules</h2>
+  ${T}<tr><th>Answer</th><th>Rules that read it</th></tr>${feeds}</table>
+
+  <h2>Step 2: rules as an outline</h2>
+  <p>Checked top to bottom after every answer. Indented rules fire only after their parent applies and you give the answer they depend on. * = required to save. "Active now" marks rules that currently apply to the entry you are drafting.</p>
+  ${tree()}
+
+  <h2>Why it works this way</h2>
+  <ul>
+  <li><b>Required vs. optional.</b> Only reasons behind extreme ratings are required; everything else can be skipped.</li>
+  <li><b>Thresholds.</b> Extreme means mood 4 or below or 8 or above, stress 7 or above, and energy 3 or below. Ratings are subjective, so these are rough cut-offs.</li>
+  <li><b>Missing data.</b> A follow-up exists only for entries where its rule fired. Insights tables therefore compare only entries where the question was asked.</li>
+  <li><b>Changing your mind.</b> Use Back to edit step 1. Answers to questions that no longer apply are dropped when you save.</li>
+  <li><b>Custom emotions or body items</b> you add do not trigger any rule, because the app can't know how you would rate them.</li>
+  <li><b>Adding follow-ups.</b> Each new rule added to the table appears on this page, in Insights, and in the CSV export automatically.</li>
+  </ul>`;
+}
+
+function viewInsights(){
+  const es=db.entries;
+  if(es.length<5)return `<h1>Insights</h1><p>Log at least 5 entries to see anything. Patterns get meaningful with 30 or more.</p>`;
+  const T=`<table border="1" cellpadding="4" cellspacing="0">`;
+  let h=`<h1>Insights</h1><p>${es.length} entries. Mood, energy and stress are 1-10 and describe the moment of each entry. Tables show averages for entries where an item applied. Small n means weak evidence, and correlation is not causation.</p>`;
+  const avgOf=(s,m)=>{const v=s.map(e=>e[m]).filter(x=>x!=null);return v.length?mean(v):null;};
+  const avgTable=(label,keysFn,order)=>{
+    const g=Object.create(null);
+    es.forEach(e=>(keysFn(e)||[]).forEach(k=>{(g[k]=g[k]||[]).push(e);}));
+    const keys=order||Object.keys(g).sort((a,b)=>g[b].length-g[a].length);
+    if(!keys.some(k=>g[k]))return "";
+    return `<h2>${esc(label)}</h2>${T}<tr><th></th><th>n</th><th>Mood</th><th>Energy</th><th>Stress</th></tr>`+
+      keys.map(k=>{const s=g[k]||[];return `<tr><td>${esc(k)}</td><td>${s.length}</td>${METRICS.map(m=>`<td>${s.length?f1(avgOf(s,m)):"-"}</td>`).join("")}</tr>`;}).join("")+`</table>`;
+  };
+
+  // trend: 7-entry rolling average of each metric
+  const roll=m=>{const v=es.map(e=>e[m]);return v.map((_,i)=>mean(v.slice(Math.max(0,i-6),i+1)));};
+  const pts=a=>a.map((v,i)=>`${(i/Math.max(1,a.length-1))*300},${100-(v-1)/9*100}`).join(" ");
+  const line=(m,dash)=>`<polyline fill="none" stroke="currentColor" stroke-width="2" ${dash?`stroke-dasharray="${dash}"`:""} points="${pts(roll(m))}"/>`;
+  h+=`<h2>Trend (7-entry average)</h2><svg viewBox="0 -4 300 108" width="100%" height="110" preserveAspectRatio="none" style="border:1px solid">${line("mood","")}${line("energy","8 4")}${line("stress","2 4")}</svg>
+  <p>Solid = mood, dashed = energy, dotted = stress. Scale 1 (bottom) to 10 (top).</p>`;
+
+  h+=avgTable("Emotions",e=>e.emotions);
+  h+=avgTable("Body",e=>e.body);
+  ALL_QS.forEach(q=>{if(q.type==="check"||q.type==="radio")h+=avgTable(`${q.group}: ${q.label||q.field}`,e=>asArr((e.fu||{})[q.field]));});
+
+  const bucket=x=>x>=5&&x<12?"morning":x>=12&&x<17?"afternoon":x>=17&&x<22?"evening":"night";
+  h+=avgTable("By time of day",e=>[bucket(new Date(e.ts).getHours())],["morning","afternoon","evening","night"]);
+  const days=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  h+=avgTable("By day of week",e=>[days[new Date(e.ts).getDay()]],days);
+
+  const numFields=ALL_QS.filter(q=>q.type==="number").map(q=>q.field);
+  const vars=[...METRICS,...numFields],val=(e,v)=>METRICS.includes(v)?e[v]:((e.fu||{})[v]!=null?Number((e.fu||{})[v]):null),pairs=[];
+  for(let i=0;i<vars.length;i++)for(let j=i+1;j<vars.length;j++){
+    const sub=es.filter(e=>val(e,vars[i])!=null&&val(e,vars[j])!=null);
+    if(sub.length<5)continue;
+    const r=pearson(sub.map(e=>val(e,vars[i])),sub.map(e=>val(e,vars[j])));
+    if(r!=null)pairs.push([vars[i],vars[j],r,sub.length]);}
+  pairs.sort((a,b)=>Math.abs(b[2])-Math.abs(a[2]));
+  if(pairs.length)h+=`<h2>Correlations (r, strongest first)</h2>${T}<tr><th>Pair</th><th>n</th><th>r</th></tr>`+pairs.map(([a,b,r,n])=>`<tr><td>${esc(a)} / ${esc(b)}</td><td>${n}</td><td>${r.toFixed(2)}</td></tr>`).join("")+`</table>`;
+  return h;
+}
+
+let outText=null;
+const outHTML=()=>outText?`<h2>${esc(outText.name)}</h2><p>If the file did not download, tap Select all, copy, and paste it into a notes app or file.</p><p><textarea readonly rows="6" cols="30" id="outTa">${esc(outText.text)}</textarea><br><button data-sel="outTa">Select all</button></p>`:"";
+function viewData(){
+  const list=(label,key)=>`<h2>${label}</h2><p>${db[key].map(a=>`<label style="white-space:nowrap">${esc(a)} <button data-rl="${key}" data-rm="${esc(a)}">x</button></label> `).join("")}</p>`;
+  return `<h1>Your data</h1>
+  <p>Everything lives in this browser on this device. Nothing is uploaded. Back up regularly: clearing browser data erases it. LifeLog 2 keeps its data separately from LifeLog 1; a LifeLog 1 backup can be imported here (its follow-up answers carry over, other fields are kept but not shown).</p>
+  <p><button id="expCsv">Export entries (CSV)</button></p>
+  <p><button id="expJson">Export backup (JSON)</button> <button id="impJson">Import backup file</button>
+  <input type="file" id="file" accept=".json" hidden></p>
+  ${outHTML()}
+  <p><label>Or paste a backup here to restore it:<br><textarea id="paste" rows="3" cols="30"></textarea></label><br><button id="impPaste">Import pasted backup</button></p>
+  ${list("Emotion list","emotions")}${list("Body list","body")}
+  <p>Removing an item from a list does not delete it from past entries.</p>
+  <h2>Danger zone</h2>
+  <p><button id="wipe">Delete all data</button></p>`;
+}
+
+/* ---------- saving ---------- */
+function goFollow(){
+  const miss=METRICS.filter(k=>!touched[k]).map(k=>`set ${k}`);
+  if(miss.length){status(`<p><b>Please complete:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
+  draft.ts=new Date().toISOString();   // the instant the overview describes
+  status("");step="follow";render();window.scrollTo(0,0);
+}
+function saveEntry(){
+  const qs=activeQs(),miss=[];
+  qs.forEach(q=>{if(!q.req)return;const v=getVal(q);if(q.type==="check"?!v.length:v==="")miss.push(q.q);});
+  if(miss.length){status(`<p><b>Please answer:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
+  const out={};
+  qs.forEach(q=>{const v=getVal(q);if(Array.isArray(v)?v.length:v!=="")out[q.field]=Array.isArray(v)?v.slice():(q.type==="number"?Number(v):v);});
+  db.entries.push({id:Date.now(),ts:draft.ts,savedAt:new Date().toISOString(),mood:draft.mood,energy:draft.energy,stress:draft.stress,
+    emotions:draft.emotions.slice(),body:draft.body.slice(),fu:out});
+  db.entries.sort((x,y)=>x.ts<y.ts?-1:x.ts>y.ts?1:0);
+  const ok=save();
+  resetDraft();render();
+  say(ok?"Entry saved.":"Entry kept in memory only: browser storage is unavailable here, so it will be lost when this page closes. Export a backup from the Data tab.");
+}
+
+/* ---------- export ---------- */
+function download(name,text,type){
+  try{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;
+    document.body.appendChild(a);a.click();a.remove();}catch(e){}
+  outText={name,text};   // copy-out area, in case the viewer blocks downloads
+  if(tab==="data")render();
+  say(`Export ready: ${name}. If no download started, use the text box further down this page.`);
+}
+const q=s=>'"'+String(s??"").replace(/"/g,'""')+'"';
+function exportEntries(stamp){
+  const fields=ALL_QS.map(x=>x.field);
+  const rows=[["timestamp","saved_at","mood","energy","stress","emotions","body",...fields].join(",")].concat(
+    db.entries.map(e=>[e.ts,e.savedAt??"",e.mood,e.energy,e.stress,q(e.emotions.join(";")),q(e.body.join(";")),
+      ...fields.map(f=>{const v=(e.fu||{})[f];return q(Array.isArray(v)?v.join(";"):v??"");})].join(",")));
+  download(`lifelog2-entries-${stamp}.csv`,rows.join("\n"),"text/csv");
+}
+
+/* ---------- events (delegated) ---------- */
+const app=document.getElementById("app");
+const setSlider=t=>{const k=t.dataset.s;draft[k]=+t.value;touched[k]=true;const l=document.getElementById("v_"+k);if(l)l.textContent=t.value;};
+const refreshFU=()=>{const f=document.getElementById("fu");if(f)f.innerHTML=followupsHTML();};
+const findQ=id=>activeQs().find(x=>x.id===id);
+
+app.addEventListener("input",e=>{
+  const t=e.target;
+  if(t.dataset.s)setSlider(t);
+  else if(t.dataset.q){const x=findQ(t.dataset.q);if(x&&x.type==="number")setVal(x,t.value);}
+});
+app.addEventListener("change",async e=>{
+  const t=e.target,ds=t.dataset;
+  if(ds.s){setSlider(t);return;}
+  if(ds.q){
+    const x=findQ(ds.q);if(!x)return;
+    if(x.type==="check"){const a=getVal(x);setVal(x,t.checked?[...a,t.value]:a.filter(v=>v!==t.value));refreshFU();}
+    else if(x.type==="radio"){setVal(x,t.value);refreshFU();}
+    else setVal(x,t.value);
+    return;}
+  if(ds.c){const a=draft[ds.c];draft[ds.c]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);return;}
+  if(t.id==="file"){
+    try{tryImport(await t.files[0].text());}catch(err){say("Could not read that file.");}
+  }
+});
+function addTo(list,label){
+  askText(`New ${label} (keep it consistent)`,v=>{
+    const n=(v||"").trim().toLowerCase();
+    if(n&&!db[list].includes(n)){db[list].push(n);save();render();}
+  });
+}
+function tryImport(text){
+  let d;
+  try{const p=JSON.parse(text);if(!p||!Array.isArray(p.entries))throw 0;d=normalize(p);}catch(e){say("That is not a valid backup.");return;}
+  ask(`Replace current data with ${d.entries.length} imported entries?`,()=>{db=d;save();resetDraft();render();say("Imported.");});
+}
+document.addEventListener("click",e=>{
+  const t=e.target,ds=t.dataset||{};
+  if(ds.tab){tab=ds.tab;render();window.scrollTo(0,0);return;}
+  if(ds.s){setSlider(t);return;}   // counts a tap on the current value
+  if(ds.dlg){
+    const p=pending,v=(document.getElementById("dlgText")||{}).value;
+    closeDlg();
+    if(p&&ds.dlg==="yes"&&p.yes)p.yes();else if(p&&ds.dlg==="ok"&&p.ok)p.ok(v);
+    return;}
+  if(ds.x==="status"){status("");return;}
+  if(ds.sel){const ta=document.getElementById(ds.sel);if(ta){ta.focus();ta.select();try{document.execCommand("copy");}catch(err){}}return;}
+  if(ds.del){const id=ds.del;ask("Delete this entry?",()=>{db.entries=db.entries.filter(x=>String(x.id)!==id);save();render();});return;}
+  if(ds.rl){const k=ds.rl,item=ds.rm;ask(`Remove "${item}" from the list?`,()=>{db[k]=db[k].filter(x=>x!==item);save();render();});return;}
+  const stamp=new Date().toISOString().slice(0,10);
+  switch(t.id){
+    case "addEmo":addTo("emotions","emotion");break;
+    case "addBody":addTo("body","body sensation");break;
+    case "nextBtn":goFollow();break;
+    case "backBtn":step="core";status("");render();window.scrollTo(0,0);break;
+    case "saveBtn":saveEntry();break;
+    case "expCsv":exportEntries(stamp);break;
+    case "expJson":download(`lifelog2-backup-${stamp}.json`,JSON.stringify(db,null,1),"application/json");break;
+    case "impJson":document.getElementById("file").click();break;
+    case "wipe":
+      ask("Delete ALL entries and lists? This cannot be undone.",()=>{db=normalize({entries:[]});save();resetDraft();render();say("All data deleted.");});
+      break;
+    case "impPaste":tryImport((document.getElementById("paste")||{}).value||"");break;
+  }
+});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&e.target.id==="dlgText"){e.preventDefault();const b=document.querySelector('[data-dlg="ok"]');if(b)b.click();}
+});
+render();
+</script>
+</body>
+</html>
