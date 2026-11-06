@@ -41,7 +41,7 @@ const PAIN_BODY = ["headache","sore","back/neck pain","joint pain","stomach pain
 
    HOW TO ADD A FOLLOW-UP: add one object to RULES.
      id      unique name
-     anchor  where it appears: "mood" | "energy" | "stress" | "emotions" | "body" | "context" (end of form)
+     anchor  where it appears: "mood" | "energy" | "stress" | "emotions" | "body" | "mind" (what's on your mind) | "context" (end of form)
      group   heading shown above the questions
      period  what time span the question covers (shown to you, and on the Logic tab)
      reads   which answers the test looks at (used for the "which answers feed which rules" table)
@@ -51,7 +51,7 @@ const PAIN_BODY = ["headache","sore","back/neck pain","joint pain","stomach pain
      qs      function returning questions: {field, label, type:"radio"|"check"|"number", q, opts, req}
    The Logic tab, the Insights tables and the CSV columns are all generated from this table.
    ===================================================================== */
-const ANCHORS=["mood","energy","stress","emotions","body","context"];
+const ANCHORS=["mood","energy","stress","emotions","body","mind","context"];
 const has=(arr,x)=>Array.isArray(arr)&&arr.includes(x);
 const hasAny=(arr,xs)=>xs.some(x=>has(arr,x));
 const fu=f=>(draft.fu&&draft.fu[f]);
@@ -93,6 +93,74 @@ const RULES = [
    qs:()=>[{field:"location",label:"Location",type:"radio",q:"Where are you right now?",opts:LOCATIONS,req:true},
            {field:"withWho",label:"Who you're with",type:"check",q:"Who are you with right now? (pick 'alone' if nobody)",opts:WITH_WHO,req:true}]}
 ];
+
+/* ---------- "What's on your mind" (fixed question + one tailored branch per life aspect) ---------- */
+const MIND_OPTS=["my appearance","my finances","my health","my relationships","my job","school","my future","something in the past","my home / living situation","my purpose / goals","how others see me","nothing in particular"];
+const FEEL_BASE=["pleased","hopeful","calm","neutral","curious","self-conscious","ashamed","anxious","afraid","frustrated","angry","sad","guilty","resentful","overwhelmed","jealous","numb"];
+const FEEL_NEG=["self-conscious","ashamed","anxious","afraid","frustrated","angry","sad","guilty","resentful","overwhelmed","jealous","numb"];
+const HELP_OPTS=["talk to someone","distract myself","do something about it","rest","not sure","nothing"];
+/* aspect(): builds, for one life area, a main rule (its tailored questions + a feelings question)
+   and a deeper rule that only appears when a negative feeling was picked. */
+function aspect(key,mindOpt,group,defs,extraFeel){
+  const f=s=>key+s;
+  const main={id:"mind_"+key,anchor:"mind",parent:"mind_on",group,period:"the moment",reads:["onMind"],
+    cond:`you picked "${mindOpt}" as on your mind`,
+    test:()=>has(fu("onMind"),mindOpt),
+    qs:()=>defs.map(d=>({field:f(d[0]),label:`${group}: ${d[2]}`,type:d[1],q:d[3],opts:d[4]}))
+      .concat([{field:f("Feel"),label:`${group}: feelings about it`,type:"check",q:"How do you feel about it right now?",opts:FEEL_BASE.concat(extraFeel||[])}])};
+  const deep={id:"mind_"+key+"_help",anchor:"mind",parent:"mind_"+key,group,period:"the moment",reads:[f("Feel")],
+    cond:`a feeling you picked about "${mindOpt}" is negative`,
+    test:()=>hasAny(fu(f("Feel")),FEEL_NEG),
+    qs:()=>[{field:f("Help"),label:`${group}: what would help`,type:"check",q:"What would help right now?",opts:HELP_OPTS}]};
+  return [main,deep];
+}
+RULES.push(
+  {id:"mind_on",anchor:"mind",group:"On your mind",period:"the moment",reads:[],
+   cond:"it is a fixed question asked on every entry",
+   test:()=>true,
+   qs:()=>[{field:"onMind",label:"On your mind right now",type:"check",q:"Are you actively thinking about any of these right now? (pick any; pick 'nothing in particular' if none)",opts:MIND_OPTS,req:true}]},
+  {id:"mind_load",anchor:"mind",parent:"mind_on",group:"On your mind",period:"the moment",reads:["onMind"],
+   cond:"you picked something you're thinking about",
+   test:()=>(Array.isArray(fu("onMind"))?fu("onMind"):[]).some(x=>x!=="nothing in particular"),
+   qs:()=>[{field:"mindLoad",label:"How much it occupies you",type:"radio",q:"How much is this taking up your attention right now?",opts:["a little","somewhat","a lot","it's consuming me"]},
+           {field:"mindTone",label:"How it feels to think about",type:"radio",q:"Is thinking about it pleasant or unpleasant?",opts:["pleasant","mixed","unpleasant"]}]},
+  ...aspect("app","my appearance","Appearance",[
+    ["Part","check","what part","Which part of your appearance?",["face","skin","hair","weight / body shape","height","muscle / fitness","teeth / smile","clothes / style","posture","signs of aging","one specific feature","overall look"]],
+    ["Look","check","what stands out","What stands out about how it looks to you?",["something I like","something I dislike","a change for the better","a change for the worse","comparing to other people","comparing to how I used to look","a flaw I keep noticing","a comment someone made"]],
+    ["Cause","radio","what brought it up","What brought it to mind?",["a mirror or reflection","a photo or video","social media","someone's comment","clothes not fitting","an upcoming event","it just came up"]]],["confident","motivated to change"]),
+  ...aspect("fin","my finances","Finances",[
+    ["Part","check","what part","Which part of your finances?",["income / pay","bills and expenses","debt","savings","a big purchase","an unexpected cost","income security","long-term (retirement, house)","cost of living"]],
+    ["State","radio","how it looks","How do your finances look to you right now?",["comfortable","okay","tight","behind","in real trouble","improving"]],
+    ["Act","radio","doing something about it","Are you doing anything about it?",["I have a plan","working on it","avoiding it","nothing yet","it's resolved"]]],["motivated to fix it"]),
+  ...aspect("hlt","my health","Health",[
+    ["Part","check","what part","What about your health?",["a physical symptom","pain","illness or infection","mental health","sleep","diet / weight","medication","an upcoming appointment","test results","someone else's health"]],
+    ["State","radio","how it seems","How does it seem right now?",["fine","a little concerning","concerning","getting worse","improving","I don't know"]],
+    ["Act","radio","doing something about it","Are you doing anything about it?",["seeing someone","resting","taking medication","planning to","avoiding it","nothing"]]],["worried"]),
+  ...aspect("rel","my relationships","Relationships",[
+    ["Who","check","who","Who are you thinking about?",["partner","family","friends","coworkers","an ex","someone new","someone I've lost","other"]],
+    ["Part","check","what part","What about the relationship?",["a conflict","feeling distant or lonely","feeling supported","a decision","missing them","worry about them","attraction / romance","trust","a recent interaction"]],
+    ["Want","radio","what you want","What do you want from it right now?",["to talk","space","to reconcile","to be understood","closeness","nothing"]]],["loving","missing them"]),
+  ...aspect("job","my job","Job",[
+    ["Part","check","what aspect","What aspect of your work?",["workload","a deadline","my boss","colleagues","pay","boredom or meaning","career direction","a mistake","recognition","job security","hours / schedule","leaving"]],
+    ["State","radio","how it's going","How is work going right now?",["well","okay","rough","in crisis"]],
+    ["Effect","radio","affecting you now","Is it affecting what you're doing right now?",["not at all","a little","it's distracting me","I can't focus on anything else"]]],["proud","motivated"]),
+  ...aspect("sch","school","School",[
+    ["Part","check","what part","What about school?",["an exam","an assignment","grades","a class","a teacher","classmates","what comes after school","cost","workload"]],
+    ["State","radio","how it's going","How is school going right now?",["well","okay","rough","in crisis"]]],["motivated"]),
+  ...aspect("fut","my future","Future",[
+    ["Part","check","what part","What about your future?",["career","money","relationships","health","where I'll live","a big decision","general uncertainty","something I'm excited about","something specific coming up"]],
+    ["Time","radio","how far ahead","How far ahead are you thinking?",["today","this week","this month","this year","years away"]]],["excited"]),
+  ...aspect("past","something in the past","The past",[
+    ["Part","check","what part","What about the past?",["a mistake or regret","an old relationship","something someone did","a happy memory","a loss","childhood","a missed opportunity"]],
+    ["Repeat","radio","how often it returns","Does this thought keep coming back?",["first time in a while","sometimes","it keeps recurring"]]],["nostalgic","grieving"]),
+  ...aspect("home","my home / living situation","Home",[
+    ["Part","check","what part","What about your home life?",["cost","roommates or family","mess or chores","safety","neighborhood","moving","repairs","privacy"]]],["comfortable"]),
+  ...aspect("goal","my purpose / goals","Purpose and goals",[
+    ["Part","check","what part","What about your purpose or goals?",["lack of direction","a goal I'm working on","my progress","comparing myself to others","meaning","a dream","giving up"]],
+    ["Prog","radio","progress","How does progress feel?",["moving forward","steady","stuck","falling behind"]]],["motivated"]),
+  ...aspect("oth","how others see me","How others see me",[
+    ["Part","check","what part","What about it?",["what people think of me","a recent comment","fitting in","being judged","my reputation","a public mistake","being liked"]]],["accepted"])
+);
 
 // every follow-up question, once per field (drives Insights tables and CSV columns)
 const ALL_QS=(()=>{const m=new Map();RULES.forEach(r=>r.qs().forEach(q=>{if(!m.has(q.field))m.set(q.field,{...q,group:r.group,ruleId:r.id});}));return [...m.values()];})();
@@ -313,11 +381,12 @@ const profileDone=()=>!!(db.profile&&db.profile.done);
 const READ_LABEL={mood:"Mood rating",energy:"Energy rating",stress:"Stress rating",emotions:"Emotions picked",body:"Body sensations picked"};
 const qLabel=f=>(ALL_QS.find(q=>q.field===f)||{}).label||f;
 
+function chainLen(r){let n=0;while(r.parent){r=RULES.find(x=>x.id===r.parent);n++;if(!r)break;}return n;}
 function activeQs(){
   const out=[];
   RULES.forEach(r=>{
     if(!r.test())return;
-    r.qs().forEach((q,i)=>out.push({...q,id:"q:"+q.field,group:r.group,ruleId:r.id,anchor:r.anchor,d:r.parent?2:1,period:r.period,why:(i===0&&r.anchor!=="context")?r.cond:null,req:!!q.req}));
+    r.qs().forEach((q,i)=>out.push({...q,id:"q:"+q.field,group:r.group,ruleId:r.id,anchor:r.anchor,d:(["context","mind"].includes(r.anchor)?0:1)+chainLen(r),period:r.period,why:(i===0&&r.anchor!=="context"&&r.id!=="mind_on")?r.cond:null,req:!!q.req}));
   });
   return out;
 }
@@ -412,7 +481,7 @@ function followupsHTML(anchor){
   let h="",group=null;
   qs.forEach(q=>{
     if(q.group!==group){if(group!==null)h+=`</fieldset>`;h+=`<fieldset><legend><b>${esc(q.group)}</b></legend>`;group=q.group;}
-    const d=anchor==="context"?0:q.d;
+    const d=q.d;
     h+="<blockquote>".repeat(d)+`<p>${q.why?`<small>Asked because ${esc(q.why)}.</small><br>`:""}<small>Covers: ${esc(q.period)}.</small><br>${esc(q.q)}${q.req?" (required)":" (optional)"}<br>${qControl(q)}</p>`+"</blockquote>".repeat(d);
   });
   return h+`</fieldset>`;
@@ -502,6 +571,7 @@ function viewEntry(){
   ${fuBox("body")}
   ${ad.reasons.length?`<p><small>Options tailored from your profile because: ${esc(ad.reasons.join("; "))}. This only changes which choices are listed first. See the Logic tab.</small></p>`:""}
   </fieldset>
+  ${fuBox("mind")}
   ${fuBox("context")}
   <p><small id="fuCount">${fuCountText()}</small></p>
   <p><button id="saveBtn">Save entry</button> <button id="clearBtn">Clear form</button></p>
@@ -568,6 +638,9 @@ function viewLogic(){
 |        right under the      |
 |        answer, and an answer|
 |        can open deeper ones |
+| "On your mind" (required)   |
+| opens a tailored branch per |
+| topic you pick              |
 | fixed Context questions at  |
 | the end                     |
 +--------------+--------------+
@@ -595,7 +668,7 @@ function viewLogic(){
   ${T}<tr><th>Follow-up group</th><th>Period it covers</th></tr>${RULES.map(r=>`<tr><td>${esc(r.group)}${r.parent?" (deeper)":""}</td><td>${esc(r.period)}</td></tr>`).join("")}</table>
 
   <h2>Overview: always asked</h2>
-  <ul><li>Mood, energy, stress (1-10; you must set each). After you set one, it shows how far it is from your usual value from the profile. The usual value is hidden until you rate, so it doesn't anchor you.</li><li>Emotions right now (any)</li><li>Body sensations right now (any)</li></ul>
+  <ul><li>Mood, energy, stress (1-10; you must set each). After you set one, it shows how far it is from your usual value from the profile. The usual value is hidden until you rate, so it doesn't anchor you.</li><li>Emotions right now (any)</li><li>Body sensations right now (any)</li><li>What you are actively thinking about right now (appearance, finances, health, relationships, job, school, future, the past, home, purpose / goals, how others see you, or nothing in particular). This one is required and asked on every entry, so comparisons aren't biased. Each thing you pick opens its own tailored questions: which part of it, how it looks or is going, how you feel about it, and, if a feeling is negative, what would help.</li></ul>
   <h3>How the profile tailors the overview</h3>
   <p>The same questions are always asked. The profile only moves some choices into a "Suggested for you" row and can add a few body options. It never hides a choice, never changes the follow-up rules, and the stored data looks the same. Added options (chronic pain locations) count as body pain for the discomfort follow-up.</p>
   ${T}<tr><th>Profile says</th><th>Suggested emotions</th><th>Suggested body</th><th>Adds</th></tr>${OVERVIEW_ADAPT.map(r=>{let f={};try{f=profileDone()?r.fx(db.profile.answers):r.fx({});}catch(e){}
@@ -612,7 +685,7 @@ function viewLogic(){
   <h2>Why it works this way</h2>
   <ul>
   <li><b>Where follow-ups appear.</b> Each rule has an <code>anchor</code>; its questions show directly under that overview answer (mood, energy, stress, emotions, body), and the fixed Context questions sit at the end.</li>
-  <li><b>Required vs. optional.</b> Reasons behind extreme ratings, and the fixed Context questions (location, who you're with), are required; everything else can be skipped.</li>
+  <li><b>Required vs. optional.</b> Reasons behind extreme ratings, and the fixed questions (what's on your mind; location and who you're with), are required; everything else can be skipped.</li>
   <li><b>Thresholds.</b> Extreme means mood 4 or below or 8 or above, stress 7 or above, and energy 3 or below. Ratings are subjective, so these are rough cut-offs.</li>
   <li><b>Fixed-schedule questions.</b> Context is asked on every entry regardless of how you feel, so comparisons (e.g. mood at work vs. at home) are not biased by only asking when you feel bad. Sleep, caffeine and alcohol should be added the same way (a rule whose test always returns true, or true on the first entry of each day).</li>
   <li><b>Missing data.</b> A follow-up exists only for entries where its rule fired. Insights tables therefore compare only entries where the question was asked.</li>
@@ -646,7 +719,10 @@ function viewInsights(){
 
   h+=avgTable("Emotions",e=>e.emotions);
   h+=avgTable("Body",e=>e.body);
-  ALL_QS.forEach(q=>{if(q.type==="check"||q.type==="radio")h+=avgTable(`${q.group}: ${q.label||q.field}`,e=>asArr((e.fu||{})[q.field]));});
+  h+=avgTable("What's on your mind",e=>asArr((e.fu||{}).onMind));
+  let fut="",nt=0;
+  ALL_QS.forEach(q=>{if(q.field!=="onMind"&&(q.type==="check"||q.type==="radio")){const t=avgTable(`${q.group}: ${q.label||q.field}`,e=>asArr((e.fu||{})[q.field]));if(t){fut+=t;nt++;}}});
+  if(nt)h+=`<details><summary>Follow-up answer tables (${nt})</summary>${fut}</details>`;
 
   const bucket=x=>x>=5&&x<12?"morning":x>=12&&x<17?"afternoon":x>=17&&x<22?"evening":"night";
   h+=avgTable("By time of day",e=>[bucket(new Date(e.ts).getHours())],["morning","afternoon","evening","night"]);
