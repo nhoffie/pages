@@ -24,6 +24,8 @@ const MOOD_WHY = ["work/school","relationships","family","health/body","sleep","
 const STRESS_WHY = ["work/school","deadlines/time pressure","relationships","money","health","uncertainty","too many demands","no clear reason"];
 const ENERGY_WHY = ["poor sleep","hungry/not eating","long or busy day","illness","boredom","low mood","no clear reason"];
 const REL_WHO = ["partner","family","friends","coworkers","other"];
+const LOCATIONS = ["home","work/school","commuting","outdoors","shop/restaurant","someone else's place","other"];
+const WITH_WHO = ["alone","partner","family","friends","coworkers","strangers"];
 const TRIGGERS = ["something someone said or did","a task or deadline","something I read or watched","physical discomfort","worry about the future","dwelling on the past","nothing I can identify"];
 const NEG_EMO = ["anxious","sad","irritable","lonely","overwhelmed","restless","numb"];
 const FOOD_BODY = ["hungry","nauseous","jittery","headache"];
@@ -81,7 +83,13 @@ const RULES = [
   {id:"food",group:"Food",period:"the 3 hours before this entry",reads:["energy","body"],
    cond:`energy is 4 or below, or body includes ${FOOD_BODY.join(", ")}`,
    test:()=>(touched.energy&&draft.energy<=4)||hasAny(draft.body,FOOD_BODY),
-   qs:()=>[{field:"ate",label:"Ate in the previous 3 hours",type:"radio",q:"Had you eaten in the 3 hours before this entry?",opts:["yes","no"]}]}
+   qs:()=>[{field:"ate",label:"Ate in the previous 3 hours",type:"radio",q:"Had you eaten in the 3 hours before this entry?",opts:["yes","no"]}]},
+  // Fixed-schedule rule: always true, so it is asked on every entry and Insights can compare fairly.
+  {id:"context",group:"Context",period:"the moment",reads:[],
+   cond:"it is a fixed question asked on every entry",
+   test:()=>true,
+   qs:()=>[{field:"location",label:"Location",type:"radio",q:"Where are you right now?",opts:LOCATIONS,req:true},
+           {field:"withWho",label:"Who you're with",type:"check",q:"Who are you with right now? (pick 'alone' if nobody)",opts:WITH_WHO,req:true}]}
 ];
 
 // every follow-up question, once per field (drives Insights tables and CSV columns)
@@ -299,8 +307,9 @@ function viewLogic(){
 
   <h2>Why it works this way</h2>
   <ul>
-  <li><b>Required vs. optional.</b> Only reasons behind extreme ratings are required; everything else can be skipped.</li>
+  <li><b>Required vs. optional.</b> Reasons behind extreme ratings, and the fixed Context questions (location, who you're with), are required; everything else can be skipped.</li>
   <li><b>Thresholds.</b> Extreme means mood 4 or below or 8 or above, stress 7 or above, and energy 3 or below. Ratings are subjective, so these are rough cut-offs.</li>
+  <li><b>Fixed-schedule questions.</b> Context is asked on every entry regardless of how you feel, so comparisons (e.g. mood at work vs. at home) are not biased by only asking when you feel bad. Sleep, caffeine and alcohol should be added the same way (a rule whose test always returns true, or true on the first entry of each day).</li>
   <li><b>Missing data.</b> A follow-up exists only for entries where its rule fired. Insights tables therefore compare only entries where the question was asked.</li>
   <li><b>Changing your mind.</b> Use Back to edit step 1. Answers to questions that no longer apply are dropped when you save.</li>
   <li><b>Custom emotions or body items</b> you add do not trigger any rule, because the app can't know how you would rate them.</li>
