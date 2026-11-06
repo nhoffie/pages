@@ -29,7 +29,7 @@ const WITH_WHO = ["alone","partner","family","friends","coworkers","strangers"];
 const TRIGGERS = ["something someone said or did","a task or deadline","something I read or watched","physical discomfort","worry about the future","dwelling on the past","nothing I can identify"];
 const NEG_EMO = ["anxious","sad","irritable","lonely","overwhelmed","restless","numb"];
 const FOOD_BODY = ["hungry","nauseous","jittery","headache"];
-const PAIN_BODY = ["headache","sore"];
+const PAIN_BODY = ["headache","sore","back/neck pain","joint pain","stomach pain","pain"];   // the last four only appear via profile (chronic pain locations)
 
 /* =====================================================================
    STEP 1 (overview) is fixed and only about THIS INSTANT:
@@ -269,6 +269,44 @@ function visibleProfile(){
   });
   return out;
 }
+/* =====================================================================
+   STEP 1 ADAPTATION. The step 1 questions themselves never change (same sliders, same
+   instant-only wording), but the profile can reorder and extend the emotion/body choices.
+     why   shown to you ("Tailored because ...")
+     test  (profile answers) => boolean
+     fx    (answers) => {emotions:[...], body:[...], addEmotions:[...], addBody:[...]}
+           emotions/body = options moved to a "Suggested for you" row (if they exist in your lists)
+           addEmotions/addBody = options added for you that are not in your lists
+   Pure display: nothing here changes which follow-ups are asked or how data is stored.
+   ===================================================================== */
+const OVERVIEW_ADAPT=[
+  {id:"anxiety",why:"you listed anxiety",test:a=>pin(a,"conditions","anxiety"),fx:a=>({emotions:["anxious","overwhelmed","restless"],body:["tense","jittery"]})},
+  {id:"lowmood",why:"you listed low mood / depression",test:a=>pin(a,"conditions","low mood / depression"),fx:a=>({emotions:["sad","numb","lonely"],body:["sleepy"]})},
+  {id:"adhd",why:"you listed ADHD",test:a=>pin(a,"conditions","ADHD"),fx:a=>({emotions:["restless","focused","bored"]})},
+  {id:"pain",why:"you listed chronic pain",test:a=>pin(a,"conditions","chronic pain"),
+   fx:a=>({body:["sore","headache"],addBody:[["back / neck","back/neck pain"],["joints","joint pain"],["abdomen","stomach pain"],["other","pain"]].filter(([k])=>pin(a,"painWhere",k)).map(x=>x[1])})},
+  {id:"sleep",why:"you sleep little, wake unrested, or have sleep problems",test:a=>pin(a,"conditions","sleep problems")||pin(a,"sleepTypical","under 5 hours","5-6 hours")||pin(a,"sleepRested","rarely"),fx:a=>({emotions:["irritable"],body:["sleepy"]})},
+  {id:"lonely",why:"you live alone and often feel lonely",test:a=>pin(a,"living","alone")&&pin(a,"lonely","often","almost always"),fx:a=>({emotions:["lonely","sad"]})},
+  {id:"stress",why:"your work is often stressful or your usual stress is 7+",test:a=>pin(a,"workStressFreq","often","almost always")||pnum(a,"baseStress")>=7,fx:a=>({emotions:["overwhelmed","anxious"],body:["tense"]})},
+  {id:"caffeine",why:"caffeine makes you jittery or you have 4+ a day",test:a=>pin(a,"caffeineEffects","jitters","anxiety")||pin(a,"caffeineTypical","4 or more a day"),fx:a=>({body:["jittery"]})},
+  {id:"care",why:"caregiving fills your weekdays",test:a=>pin(a,"daily","caregiving / home"),fx:a=>({emotions:["overwhelmed","grateful"],body:["sleepy"]})},
+  {id:"exercise",why:"you exercise regularly",test:a=>a.exercise!=null&&!pin(a,"exercise","rarely"),fx:a=>({body:["sore","relaxed"]})},
+  {id:"meds",why:"you reported medication side effects",test:a=>pin(a,"medsSide","drowsiness","nausea","restlessness"),
+   fx:a=>({body:[pin(a,"medsSide","drowsiness")?"sleepy":null,pin(a,"medsSide","nausea")?"nauseous":null,pin(a,"medsSide","restlessness")?"jittery":null].filter(Boolean),emotions:pin(a,"medsSide","restlessness")?["restless"]:[]})},
+  {id:"happy",why:"your usual mood is 8+",test:a=>pnum(a,"baseMood")>=8,fx:a=>({emotions:["happy","content","grateful"]})}
+];
+function adaptation(){
+  const out={emotions:[],body:[],addEmotions:[],addBody:[],reasons:[]};
+  if(!profileDone())return out;
+  const a=db.profile.answers,push=(arr,xs)=>(xs||[]).forEach(x=>{if(!arr.includes(x))arr.push(x);});
+  OVERVIEW_ADAPT.forEach(r=>{
+    if(!r.test(a))return;
+    const f=r.fx(a);
+    push(out.emotions,f.emotions);push(out.body,f.body);push(out.addEmotions,f.addEmotions);push(out.addBody,f.addBody);
+    out.reasons.push(r.why);
+  });
+  return out;
+}
 const profileDone=()=>!!(db.profile&&db.profile.done);
 const READ_LABEL={mood:"Mood rating",energy:"Energy rating",stress:"Stress rating",emotions:"Emotions picked",body:"Body sensations picked"};
 const qLabel=f=>(ALL_QS.find(q=>q.field===f)||{}).label||f;
@@ -433,14 +471,29 @@ function saveProfile(){
   say(ok?"Profile saved.":"Profile kept in memory only: browser storage is unavailable here. Export a backup from the Data tab.");
 }
 
+const BASE_KEY={mood:"baseMood",energy:"baseEnergy",stress:"baseStress"};
+function deltaText(k){
+  const b=db.profile&&db.profile.answers?db.profile.answers[BASE_KEY[k]]:null;
+  if(b==null||!touched[k])return "";   // shown only after you rate, so your usual value doesn't anchor the rating
+  const d=draft[k]-b;
+  return d===0?`(same as your usual ${b})`:`(${Math.abs(d)} ${d>0?"above":"below"} your usual ${b})`;
+}
+function pickRows(field,list,extra,promoted,cur){
+  const all=list.slice();extra.forEach(x=>{if(!all.includes(x))all.push(x);});
+  cur.forEach(x=>{if(!all.includes(x))all.push(x);});
+  const top=promoted.filter(x=>all.includes(x)),rest=all.filter(x=>!top.includes(x));
+  return top.length?`<small>Suggested for you:</small><br>${checks(field,top,cur)}<br><small>Everything else:</small><br>${checks(field,rest,cur)}`:checks(field,all,cur);
+}
 function viewOverview(){
-  const sl=(k,l)=>`<p><label>${l}: <b id="v_${k}">${touched[k]?draft[k]:"not set"}</b><br><input type="range" min="1" max="10" step="1" value="${draft[k]}" data-s="${k}"></label></p>`;
+  const ad=adaptation();
+  const sl=(k,l)=>`<p><label>${l}: <b id="v_${k}">${touched[k]?draft[k]:"not set"}</b> <small id="d_${k}">${esc(deltaText(k))}</small><br><input type="range" min="1" max="10" step="1" value="${draft[k]}" data-s="${k}"></label></p>`;
   return `<h1>New entry</h1>
   <p>Step 1 of 2: overview. These questions are about <b>this exact moment, right now</b>. Nothing here looks back over a past period. The entry is stamped with the time you press Next, and that time can't be changed. Each follow-up question in step 2 says what period it covers. <button data-tab="logic">How it works</button></p>
   <fieldset><legend>How do you feel right now?</legend>
   ${sl("mood","Mood right now (1 awful, 10 great)")}${sl("energy","Energy right now (1 drained, 10 energized)")}${sl("stress","Stress right now (1 calm, 10 extreme)")}
-  <p>Emotions right now (pick any):<br>${checks("emotions",db.emotions,draft.emotions)}<button id="addEmo">+ add</button></p>
-  <p>Body right now (pick any):<br>${checks("body",db.body,draft.body)}<button id="addBody">+ add</button></p>
+  <p>Emotions right now (pick any):<br>${pickRows("emotions",db.emotions,ad.addEmotions,ad.emotions,draft.emotions)} <button id="addEmo">+ add</button></p>
+  <p>Body right now (pick any):<br>${pickRows("body",db.body,ad.addBody,ad.body,draft.body)} <button id="addBody">+ add</button></p>
+  ${ad.reasons.length?`<p><small>Options tailored from your profile because: ${esc(ad.reasons.join("; "))}. This only changes which choices are listed first. See the Logic tab.</small></p>`:""}
   </fieldset>
   <p><button id="nextBtn">Next: follow-up questions</button></p>
   <p>${db.entries.length} entries so far.</p>`;
@@ -486,7 +539,7 @@ function viewLogic(){
     return `<tr><td>${esc(name)}</td><td>${rs.length?rs.map(r=>`${esc(r.cond)} &rarr; ${esc(r.group)}${on(r)?" <i>(active now)</i>":""}`).join("<br>"):"(no rule reads this yet)"}</td></tr>`;
   }).join("");
   return `<h1>How questions are chosen</h1>
-  <p>After the one-time profile, every entry has two steps. Step 1 is a fixed overview of how you are right now. Step 2 is a set of follow-ups chosen by the rules below, using your step 1 answers (and, for deeper follow-ups, your earlier follow-up answers). This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
+  <p>After the one-time profile, every entry has two steps. Step 1 is an overview of how you are right now: its questions are fixed, but the order and extras of its emotion and body choices adapt to your profile. Step 2 is a set of follow-ups chosen by the rules below, using your step 1 answers (and, for deeper follow-ups, your earlier follow-up answers). This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
 
   <h2>Flowchart</h2>
 <pre style="white-space:pre-wrap">+-----------------------------+
@@ -537,7 +590,12 @@ function viewLogic(){
   ${T}<tr><th>Follow-up group</th><th>Period it covers</th></tr>${RULES.map(r=>`<tr><td>${esc(r.group)}${r.parent?" (deeper)":""}</td><td>${esc(r.period)}</td></tr>`).join("")}</table>
 
   <h2>Step 1: always asked</h2>
-  <ul><li>Mood, energy, stress (1-10; you must set each)</li><li>Emotions right now (any)</li><li>Body sensations right now (any)</li></ul>
+  <ul><li>Mood, energy, stress (1-10; you must set each). After you set one, it shows how far it is from your usual value from the profile. The usual value is hidden until you rate, so it doesn't anchor you.</li><li>Emotions right now (any)</li><li>Body sensations right now (any)</li></ul>
+  <h3>How the profile tailors Step 1</h3>
+  <p>The same questions are always asked. The profile only moves some choices into a "Suggested for you" row and can add a few body options. It never hides a choice, never changes the follow-up rules, and the stored data looks the same. Added options (chronic pain locations) count as body pain for the discomfort follow-up.</p>
+  ${T}<tr><th>Profile says</th><th>Suggested emotions</th><th>Suggested body</th><th>Adds</th></tr>${OVERVIEW_ADAPT.map(r=>{let f={};try{f=profileDone()?r.fx(db.profile.answers):r.fx({});}catch(e){}
+    const ac=profileDone()&&r.test(db.profile.answers);
+    return `<tr><td>${esc(r.why)}${ac?" <i>(active for you)</i>":""}</td><td>${esc((f.emotions||[]).join(", "))}</td><td>${esc((f.body||[]).join(", "))}</td><td>${esc([...(f.addEmotions||[]),...(f.addBody||[])].join(", "))}</td></tr>`;}).join("")}</table>
 
   <h2>Which answers feed which rules</h2>
   ${T}<tr><th>Answer</th><th>Rules that read it</th></tr>${feeds}</table>
@@ -667,7 +725,7 @@ function exportEntries(stamp){
 
 /* ---------- events (delegated) ---------- */
 const app=document.getElementById("app");
-const setSlider=t=>{const k=t.dataset.s;draft[k]=+t.value;touched[k]=true;const l=document.getElementById("v_"+k);if(l)l.textContent=t.value;};
+const setSlider=t=>{const k=t.dataset.s;draft[k]=+t.value;touched[k]=true;const l=document.getElementById("v_"+k);if(l)l.textContent=t.value;const dl=document.getElementById("d_"+k);if(dl)dl.textContent=deltaText(k);};
 const refreshFU=()=>{const f=document.getElementById("fu");if(f)f.innerHTML=followupsHTML();};
 const findQ=id=>activeQs().find(x=>x.id===id);
 
