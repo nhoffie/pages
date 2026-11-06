@@ -97,34 +97,178 @@ const ALL_QS=(()=>{const m=new Map();RULES.forEach(r=>r.qs().forEach(q=>{if(!m.h
 /* =====================================================================
    STEP 0 (profile) is asked once, before the first entry can be created.
    It is context about you, not a moment in time. Edit it later from the Data tab.
-   HOW TO ADD A PROFILE QUESTION: add one object here.
-     field, group (heading), q (text), type radio|check|number, opts, period, req
+   It BRANCHES: a question with `when` only appears after the answers it depends on,
+   and deeper questions can hang off those (see PROFILE_QS below).
    ===================================================================== */
+/* A question's `when(a)` receives only the answers to questions that are currently visible, so a
+   hidden parent can never keep its children alive. Order matters: put children right after their parent.
+   d = indent depth, why = shown to you ("Asked because ..."), period = time span the question covers. */
+const pin=(a,f,...vs)=>vs.some(v=>Array.isArray(a[f])?a[f].includes(v):a[f]===v);
+const pnum=(a,f)=>(a[f]==null||a[f]==="")?NaN:Number(a[f]);
+const PQ=(type,field,group,q,x)=>Object.assign({field,group,type,q,period:"currently",d:0},x);
+const R=(f,g,q,opts,x)=>PQ("radio",f,g,q,Object.assign({opts},x));
+const C=(f,g,q,opts,x)=>PQ("check",f,g,q,Object.assign({opts},x));
+const N=(f,g,q,x)=>PQ("number",f,g,q,Object.assign({min:1,max:10},x));
+const T=(f,g,q,x)=>PQ("text",f,g,q,x);
+const G_GOAL="What you want from this",G_DAY="Your weekdays",G_WORK="Work",G_SCH="School",G_CARE="Caregiving and home",G_FREE="Your days",
+  G_HOME="Home and people",G_MONEY="Money",G_BASE="Your usual baseline (1-10)",G_SLEEP="Sleep",G_CAF="Caffeine",G_ALC="Alcohol",
+  G_EX="Exercise",G_HEALTH="Health (optional, stays on this device)",G_LOG="Logging";
+const atWork=a=>pin(a,"daily","work","work and school");
+const atSchool=a=>pin(a,"daily","school","work and school");
+const care3=["managed with treatment or support","not treated or supported","not sure"];
 const PROFILE_QS=[
-  {field:"goals",group:"What you want from this",type:"check",req:true,period:"going forward",q:"What do you most want to learn from logging?",
-   opts:["what affects my mood","what causes my stress","what affects my energy","how my activities make me feel","how sleep affects me","how my body and mood connect","tracking a health or mental-health condition","just curious"]},
-  {field:"daily",group:"Your life",type:"radio",req:true,period:"a typical week",q:"What fills most of your weekdays?",
-   opts:["work","school","work and school","caregiving / home","neither right now","varies a lot"]},
-  {field:"living",group:"Your life",type:"radio",period:"currently",q:"Who do you live with?",
-   opts:["alone","partner","family","roommates","other"]},
-  {field:"baseMood",group:"Your usual baseline (1-10)",type:"number",period:"a typical day lately",q:"On a typical day, how is your mood? (1 awful, 10 great)"},
-  {field:"baseEnergy",group:"Your usual baseline (1-10)",type:"number",period:"a typical day lately",q:"On a typical day, how is your energy? (1 drained, 10 energized)"},
-  {field:"baseStress",group:"Your usual baseline (1-10)",type:"number",period:"a typical day lately",q:"On a typical day, how is your stress? (1 calm, 10 extreme)"},
-  {field:"sleepTypical",group:"Habits",type:"radio",period:"a typical night lately",q:"How much do you usually sleep per night?",
-   opts:["under 5 hours","5-6 hours","6-7 hours","7-8 hours","8-9 hours","over 9 hours","very irregular"]},
-  {field:"caffeineTypical",group:"Habits",type:"radio",period:"a typical day lately",q:"How much caffeine do you usually have?",
-   opts:["none","1 serving a day","2-3 servings a day","4 or more a day"]},
-  {field:"alcoholTypical",group:"Habits",type:"radio",period:"the last few months",q:"How often do you drink alcohol?",
-   opts:["never","a few times a year","a few times a month","about weekly","several times a week","daily"]},
-  {field:"exercise",group:"Habits",type:"radio",period:"a typical week lately",q:"How often do you exercise?",
-   opts:["rarely","1-2 times a week","3-4 times a week","5 or more times a week"]},
-  {field:"conditions",group:"Health (optional, stays on this device)",type:"check",period:"currently",q:"Does anything affect how you feel day to day?",
-   opts:["anxiety","low mood / depression","ADHD","chronic pain","sleep problems","a medical condition affecting energy","none","prefer not to say"]},
-  {field:"meds",group:"Health (optional, stays on this device)",type:"radio",period:"currently",q:"Do you take medication that may affect mood, energy or sleep?",
-   opts:["yes","no","prefer not to say"]},
-  {field:"logTimes",group:"Logging",type:"check",period:"going forward",q:"When do you expect to log most?",
-   opts:["morning","afternoon","evening","night"]}
+ // ---- goals
+ C("goals",G_GOAL,"What do you most want to learn from logging?",["what affects my mood","what causes my stress","what affects my energy","how my activities make me feel","how sleep affects me","how my body and mood connect","tracking a health or mental-health condition","just curious"],{req:true,period:"going forward"}),
+ R("goalMoodSwing",G_GOAL,"Does your mood change a lot within a single day?",["rarely","sometimes","often"],{d:1,when:a=>pin(a,"goals","what affects my mood"),why:"you want to learn what affects your mood",period:"a typical day lately"}),
+ C("goalStressGuess",G_GOAL,"What do you already suspect is behind your stress?",STRESS_WHY,{d:1,when:a=>pin(a,"goals","what causes my stress"),why:"you want to learn what causes your stress",period:"lately"}),
+ R("goalEnergyLow",G_GOAL,"When is your energy usually lowest?",["morning","afternoon","evening","varies"],{d:1,when:a=>pin(a,"goals","what affects my energy"),why:"you want to learn what affects your energy",period:"a typical day lately"}),
+ C("goalActs",G_GOAL,"Which kinds of activities are you most curious about?",["work / school","exercise","social time","hobbies","screens / social media","chores","rest / relaxing"],{d:1,when:a=>pin(a,"goals","how my activities make me feel"),why:"you want to learn how activities make you feel",period:"going forward"}),
+ R("goalSleepIssue",G_GOAL,"What is the main sleep problem, if any?",["falling asleep","staying asleep","waking too early","not enough time in bed","sleep isn't refreshing","no real problem"],{d:1,when:a=>pin(a,"goals","how sleep affects me"),why:"you want to learn how sleep affects you",period:"lately"}),
+ R("goalPro",G_GOAL,"Are you working with a doctor or therapist on this?",["yes","no","not yet, but I'd like to"],{d:1,when:a=>pin(a,"goals","tracking a health or mental-health condition"),why:"you want to track a health or mental-health condition"}),
+ R("goalProFreq",G_GOAL,"How often do you see them?",["weekly or more","every few weeks","every few months","rarely"],{d:2,when:a=>pin(a,"goalPro","yes"),why:"you work with a professional"}),
+ // ---- weekdays
+ R("daily",G_DAY,"What fills most of your weekdays?",["work","school","work and school","caregiving / home","neither right now","varies a lot"],{req:true,period:"a typical week"}),
+ // work
+ R("workKind",G_WORK,"What kind of work do you do?",["office / desk","tech / engineering","healthcare","education","trades / manual labor","retail / service","creative","self-employed / freelance","other"],{d:1,when:atWork,why:"most of your weekdays are work",period:"your current job"}),
+ T("workKindOther",G_WORK,"Describe your work briefly.",{d:2,when:a=>pin(a,"workKind","other"),why:"you picked 'other'"}),
+ N("workHours",G_WORK,"Roughly how many hours a week do you work?",{d:1,min:0,max:100,when:atWork,period:"a typical week"}),
+ R("workOvertime",G_WORK,"Are the long hours your choice?",["yes","no, it's expected","no, I need the money"],{d:2,when:a=>pnum(a,"workHours")>50,why:"you work over 50 hours a week",period:"a typical week"}),
+ R("workSchedule",G_WORK,"What is your schedule like?",["regular daytime","shift work","rotating or night shifts","irregular / on call","flexible"],{d:1,when:atWork}),
+ R("workShiftSleep",G_WORK,"Does your schedule disrupt your sleep?",["often","sometimes","no"],{d:2,when:a=>pin(a,"workSchedule","shift work","rotating or night shifts","irregular / on call"),why:"your schedule is shifts, nights or on call",period:"a typical week"}),
+ R("workPlace",G_WORK,"Where do you work?",["on-site","remote","hybrid","varies"],{d:1,when:atWork}),
+ N("workCommute",G_WORK,"Minutes each way to get there?",{d:2,min:0,max:300,when:a=>pin(a,"workPlace","on-site","hybrid"),why:"you work on-site or hybrid",period:"a typical workday"}),
+ R("workTenure",G_WORK,"How long have you had this job?",["under 6 months","6-12 months","1-3 years","3-10 years","over 10 years"],{d:1,when:atWork}),
+ N("workPay",G_WORK,"Roughly how much do you take home per month after tax? (number, your currency; skip if you prefer)",{d:1,min:0,max:1e9,when:atWork,period:"a typical month"}),
+ R("workPayFair",G_WORK,"Do you feel fairly paid for the work?",["underpaid","about fair","overpaid"],{d:1,when:atWork}),
+ N("workLike",G_WORK,"How much do you like the job? (1 hate, 10 love)",{d:1,when:atWork,period:"lately"}),
+ C("workDislike",G_WORK,"What bothers you most about it?",["boss","colleagues","workload","pay","boredom","no room to grow","values mismatch","schedule","commute","other"],{d:2,when:a=>pnum(a,"workLike")<=4,why:"you rated the job 4 or below",period:"lately"}),
+ C("workMixed",G_WORK,"What would make it better?",["pay","workload","colleagues","flexibility","growth","more meaning"],{d:2,when:a=>pnum(a,"workLike")>=5&&pnum(a,"workLike")<=7,why:"you rated the job 5-7",period:"lately"}),
+ C("workLikeWhy",G_WORK,"What do you like most about it?",["meaningful work","colleagues","pay","flexibility","growth","challenge","other"],{d:2,when:a=>pnum(a,"workLike")>=8,why:"you rated the job 8 or above",period:"lately"}),
+ R("workQual",G_WORK,"How qualified do you feel for it?",["under-qualified (stretching)","about right","over-qualified"],{d:1,when:atWork}),
+ R("workQualStress",G_WORK,"Does that cause you stress?",["often","sometimes","no"],{d:2,when:a=>pin(a,"workQual","under-qualified (stretching)"),why:"you feel under-qualified",period:"lately"}),
+ R("workQualBored",G_WORK,"Do you feel bored or under-challenged?",["often","sometimes","rarely"],{d:2,when:a=>pin(a,"workQual","over-qualified"),why:"you feel over-qualified",period:"lately"}),
+ R("workSecure",G_WORK,"How secure does the job feel?",["very secure","somewhat","insecure"],{d:1,when:atWork}),
+ R("workStressFreq",G_WORK,"How often is work stressful?",["rarely","sometimes","often","almost always"],{d:1,when:atWork,period:"lately"}),
+ C("workStressSrc",G_WORK,"What makes it stressful?",["workload","deadlines","boss","colleagues","customers / clients","uncertainty","long hours","safety"],{d:2,when:a=>pin(a,"workStressFreq","often","almost always"),why:"work is often stressful",period:"lately"}),
+ R("workSupport",G_WORK,"Do you feel supported by your boss and colleagues?",["yes","mixed","no"],{d:1,when:atWork,period:"lately"}),
+ R("workLeave",G_WORK,"Are you thinking of leaving?",["no","maybe","yes, looking"],{d:1,when:atWork,period:"lately"}),
+ // school
+ R("schoolLevel",G_SCH,"What level of school?",["high school","college / university","graduate","vocational","other"],{d:1,when:atSchool,why:"school fills your weekdays"}),
+ R("schoolLoad",G_SCH,"Full-time or part-time?",["full-time","part-time"],{d:1,when:atSchool}),
+ N("schoolHours",G_SCH,"Roughly how many hours a week in class plus studying?",{d:1,min:0,max:100,when:atSchool,period:"a typical week"}),
+ N("schoolLike",G_SCH,"How much do you like it? (1 hate, 10 love)",{d:1,when:atSchool,period:"lately"}),
+ R("schoolGrades",G_SCH,"How are your grades going?",["above expectations","on track","struggling"],{d:1,when:atSchool,period:"this term"}),
+ C("schoolStruggle",G_SCH,"What is making it hard?",["workload","understanding the material","motivation","time","attention / focus","stress","other"],{d:2,when:a=>pin(a,"schoolGrades","struggling"),why:"you are struggling with grades",period:"this term"}),
+ R("schoolDeadlines",G_SCH,"How often are you up against deadlines?",["rarely","sometimes","often"],{d:1,when:atSchool,period:"this term"}),
+ R("schoolMoney",G_SCH,"Do you worry about paying for school?",["no","a bit","a lot"],{d:1,when:atSchool}),
+ // caregiving
+ C("careWho",G_CARE,"Who do you care for?",["children","partner","parent","other relative","just running the home"],{d:1,when:a=>pin(a,"daily","caregiving / home"),why:"caregiving or home fills your weekdays"}),
+ C("careKids",G_CARE,"How old are the children?",["under 5","5-12","teens","adult"],{d:2,when:a=>pin(a,"careWho","children"),why:"you care for children"}),
+ N("careHours",G_CARE,"Roughly how many hours a day?",{d:1,min:0,max:24,when:a=>pin(a,"daily","caregiving / home"),period:"a typical day"}),
+ R("careHelp",G_CARE,"Do you have help with it?",["yes","some","no"],{d:1,when:a=>pin(a,"daily","caregiving / home")}),
+ R("careBreaks",G_CARE,"Do you get regular breaks for yourself?",["yes","sometimes","rarely"],{d:1,when:a=>pin(a,"daily","caregiving / home"),period:"a typical week"}),
+ N("careLike",G_CARE,"How sustainable does it feel? (1 not at all, 10 easily)",{d:1,when:a=>pin(a,"daily","caregiving / home"),period:"lately"}),
+ // neither / varies
+ R("freeWhy",G_FREE,"What is the situation?",["between jobs","retired","health reasons","taking a break","other"],{d:1,when:a=>pin(a,"daily","neither right now"),why:"you have no work or school right now"}),
+ R("freeSeek",G_FREE,"Are you looking for work or study?",["yes, actively","thinking about it","no"],{d:2,when:a=>pin(a,"freeWhy","between jobs","taking a break"),why:"you are between jobs or on a break"}),
+ C("freeDays",G_FREE,"How do you mostly spend your days?",["hobbies","socializing","errands / chores","screens","exercise","resting","volunteering"],{d:1,when:a=>pin(a,"daily","neither right now"),period:"a typical week"}),
+ R("freeStruct",G_FREE,"Do your days feel structured?",["yes","somewhat","no"],{d:1,when:a=>pin(a,"daily","neither right now"),period:"a typical week"}),
+ C("variesWhy",G_FREE,"Why does it vary?",["gig / freelance work","shift work","seasonal","caregiving","health","other"],{d:1,when:a=>pin(a,"daily","varies a lot"),why:"your weekdays vary a lot"}),
+ R("variesPlan",G_FREE,"Can you plan your week ahead?",["yes","partly","no"],{d:1,when:a=>pin(a,"daily","varies a lot")}),
+ // ---- home and people
+ R("living",G_HOME,"Who do you live with?",["alone","partner","family","roommates","other"],{}),
+ T("livingOther",G_HOME,"Describe your living situation briefly.",{d:1,when:a=>pin(a,"living","other"),why:"you picked 'other'"}),
+ R("aloneLike",G_HOME,"Do you like living alone?",["yes","mixed","no"],{d:1,when:a=>pin(a,"living","alone"),why:"you live alone"}),
+ R("lonely",G_HOME,"How often do you feel lonely?",["rarely","sometimes","often","almost always"],{d:1,when:a=>pin(a,"living","alone"),period:"lately"}),
+ N("relSat",G_HOME,"How satisfied are you with the relationship? (1 not at all, 10 very)",{d:1,when:a=>pin(a,"living","partner"),why:"you live with a partner",period:"lately"}),
+ C("relIssue",G_HOME,"What strains it most?",["communication","intimacy","money","time apart","trust","other"],{d:2,when:a=>pnum(a,"relSat")<=4,why:"you rated it 4 or below",period:"lately"}),
+ R("relTogether",G_HOME,"How much time do you spend together on a typical day?",["little","a few hours","most of the day"],{d:1,when:a=>pin(a,"living","partner"),period:"a typical day"}),
+ C("famWho",G_HOME,"Who is in your household?",["parents","siblings","children","extended family"],{d:1,when:a=>pin(a,"living","family"),why:"you live with family"}),
+ R("famGet",G_HOME,"How well do you get along at home?",["well","mixed","poorly"],{d:1,when:a=>pin(a,"living","family"),period:"lately"}),
+ C("famStrain",G_HOME,"What causes tension?",["conflict","expectations","privacy","money","caregiving","other"],{d:2,when:a=>pin(a,"famGet","mixed","poorly"),why:"home life is mixed or poor",period:"lately"}),
+ R("roomGet",G_HOME,"How well do you get along with roommates?",["well","mixed","poorly"],{d:1,when:a=>pin(a,"living","roommates"),why:"you live with roommates",period:"lately"}),
+ R("roomQuiet",G_HOME,"Do you get enough privacy and quiet?",["yes","sometimes","no"],{d:1,when:a=>pin(a,"living","roommates"),period:"lately"}),
+ R("housing",G_HOME,"What is your housing like?",["rent","own","with family, no rent","temporary / unstable"],{}),
+ R("housingWorry",G_HOME,"How worried are you about housing?",["a bit","a lot"],{d:1,when:a=>pin(a,"housing","temporary / unstable"),why:"your housing is temporary or unstable",period:"lately"}),
+ R("socialFreq",G_HOME,"How often do you see friends in person?",["most days","weekly","monthly","rarely"],{period:"lately"}),
+ R("socialWant",G_HOME,"Would you like to see them more?",["yes","no"],{d:1,when:a=>pin(a,"socialFreq","monthly","rarely"),why:"you see friends monthly or less",period:"lately"}),
+ C("socialWhy",G_HOME,"What gets in the way?",["time","distance","energy","anxiety","few friends nearby","money"],{d:2,when:a=>pin(a,"socialWant","yes"),why:"you would like to see friends more",period:"lately"}),
+ // ---- money
+ R("money",G_MONEY,"How comfortable is your financial situation?",["struggling","tight","okay","comfortable"],{period:"lately"}),
+ R("moneyWorry",G_MONEY,"How often does money worry you?",["sometimes","often","constantly"],{d:1,when:a=>pin(a,"money","struggling","tight"),why:"money is tight or you're struggling",period:"lately"}),
+ R("moneyDebt",G_MONEY,"Does debt weigh on you?",["no","some","a lot"],{d:1,when:a=>pin(a,"money","struggling","tight"),period:"lately"}),
+ // ---- baseline
+ N("baseMood",G_BASE,"On a typical day, how is your mood? (1 awful, 10 great)",{period:"a typical day lately"}),
+ R("moodLowLong",G_BASE,"How long has your mood been this low?",["under 2 weeks","2 weeks to 3 months","over 3 months","it's always been this way"],{d:1,when:a=>pnum(a,"baseMood")<=4,why:"your usual mood is 4 or below",period:"until now"}),
+ C("moodLowCause",G_BASE,"What do you think is behind it?",MOOD_WHY,{d:1,when:a=>pnum(a,"baseMood")<=4,period:"lately"}),
+ R("moodLowHelp",G_BASE,"Are you getting support for it?",["yes","no","not sure"],{d:1,when:a=>pnum(a,"baseMood")<=4,period:"currently"}),
+ C("moodHighWhy",G_BASE,"What keeps it up?",["relationships","work / school","health","routine","hobbies","other"],{d:1,when:a=>pnum(a,"baseMood")>=8,why:"your usual mood is 8 or above",period:"lately"}),
+ N("baseEnergy",G_BASE,"On a typical day, how is your energy? (1 drained, 10 energized)",{period:"a typical day lately"}),
+ C("energyLowCause",G_BASE,"What do you think drains it?",ENERGY_WHY,{d:1,when:a=>pnum(a,"baseEnergy")<=4,why:"your usual energy is 4 or below",period:"lately"}),
+ R("energyLowLong",G_BASE,"How long has energy been this low?",["under 2 weeks","2 weeks to 3 months","over 3 months","it's always been this way"],{d:1,when:a=>pnum(a,"baseEnergy")<=4,period:"until now"}),
+ N("baseStress",G_BASE,"On a typical day, how is your stress? (1 calm, 10 extreme)",{period:"a typical day lately"}),
+ C("stressHighCause",G_BASE,"What is behind your usual stress?",STRESS_WHY,{d:1,when:a=>pnum(a,"baseStress")>=7,why:"your usual stress is 7 or above",period:"lately"}),
+ C("stressCope",G_BASE,"How do you cope with it?",["exercise","talking to someone","rest","screens","alcohol or other substances","avoiding it","nothing"],{d:1,when:a=>pnum(a,"baseStress")>=7,period:"lately"}),
+ R("stressCopeSubst",G_BASE,"How often do you use alcohol or substances to cope?",["rarely","sometimes","often"],{d:2,when:a=>pin(a,"stressCope","alcohol or other substances"),why:"you cope with alcohol or substances",period:"lately"}),
+ // ---- sleep
+ R("sleepTypical",G_SLEEP,"How much do you usually sleep per night?",["under 5 hours","5-6 hours","6-7 hours","7-8 hours","8-9 hours","over 9 hours","very irregular"],{period:"a typical night lately"}),
+ C("sleepShortWhy",G_SLEEP,"What cuts your sleep short?",["can't fall asleep","wake during the night","wake too early","work / school schedule","kids or caregiving","noise or environment","I stay up by choice","health"],{d:1,when:a=>pin(a,"sleepTypical","under 5 hours","5-6 hours"),why:"you usually sleep under 6 hours",period:"a typical night lately"}),
+ C("sleepLongWhy",G_SLEEP,"Why do you sleep that much?",["I need it","low mood or energy","no fixed schedule","health","other"],{d:1,when:a=>pin(a,"sleepTypical","over 9 hours"),why:"you usually sleep over 9 hours",period:"a typical night lately"}),
+ C("sleepIrregWhy",G_SLEEP,"Why is your sleep irregular?",["shift work","lifestyle","insomnia","caregiving","other"],{d:1,when:a=>pin(a,"sleepTypical","very irregular"),why:"your sleep is very irregular",period:"lately"}),
+ R("sleepRested",G_SLEEP,"Do you wake up rested?",["usually","sometimes","rarely"],{period:"a typical morning lately"}),
+ R("nap",G_SLEEP,"Do you nap?",["no","sometimes","most days"],{period:"a typical week"}),
+ R("sleepAid",G_SLEEP,"Do you use anything to help you sleep?",["no","sometimes","regularly"],{period:"lately"}),
+ C("sleepAidKind",G_SLEEP,"What do you use?",["prescription medication","melatonin or supplements","alcohol","cannabis","other"],{d:1,when:a=>pin(a,"sleepAid","sometimes","regularly"),why:"you use a sleep aid",period:"lately"}),
+ // ---- caffeine
+ R("caffeineTypical",G_CAF,"How much caffeine do you usually have?",["none","1 serving a day","2-3 servings a day","4 or more a day"],{period:"a typical day lately"}),
+ C("caffeineKind",G_CAF,"What kinds?",["coffee","tea","energy drinks","soda","pills / pre-workout"],{d:1,when:a=>!pin(a,"caffeineTypical","none"),why:"you have caffeine",period:"a typical day lately"}),
+ R("caffeineLate",G_CAF,"When is your last one, usually?",["before noon","afternoon","evening","any time"],{d:1,when:a=>!pin(a,"caffeineTypical","none"),period:"a typical day lately"}),
+ C("caffeineEffects",G_CAF,"Any effects you notice?",["jitters","anxiety","trouble sleeping","headaches without it","none"],{d:1,when:a=>pin(a,"caffeineTypical","2-3 servings a day","4 or more a day"),why:"you have 2 or more servings a day",period:"lately"}),
+ R("caffeineCut",G_CAF,"Would you like to cut down?",["yes","no"],{d:2,when:a=>pin(a,"caffeineTypical","4 or more a day"),why:"you have 4 or more a day"}),
+ // ---- alcohol
+ R("alcoholTypical",G_ALC,"How often do you drink alcohol?",["never","a few times a year","a few times a month","about weekly","several times a week","daily"],{period:"the last few months"}),
+ R("alcoholAmount",G_ALC,"How many drinks do you usually have when you drink?",["1","2-3","4-5","6 or more"],{d:1,when:a=>!pin(a,"alcoholTypical","never"),why:"you drink alcohol",period:"the last few months"}),
+ C("alcoholWhen",G_ALC,"When do you usually drink?",["weekends","after work","socially","to relax or cope","with meals"],{d:1,when:a=>!pin(a,"alcoholTypical","never"),period:"the last few months"}),
+ R("alcoholNext",G_ALC,"How do you usually feel the next day?",["fine","tired","low mood","anxious"],{d:1,when:a=>!pin(a,"alcoholTypical","never"),period:"the last few months"}),
+ R("alcoholCut",G_ALC,"Would you like to cut down?",["yes","no","unsure"],{d:2,when:a=>pin(a,"alcoholTypical","several times a week","daily"),why:"you drink several times a week or daily"}),
+ // ---- exercise
+ R("exercise",G_EX,"How often do you exercise?",["rarely","1-2 times a week","3-4 times a week","5 or more times a week"],{period:"a typical week lately"}),
+ C("exerciseKind",G_EX,"What kind?",["walking","running","gym / weights","team sport","yoga / stretching","cycling","swimming","other"],{d:1,when:a=>!pin(a,"exercise","rarely"),why:"you exercise",period:"a typical week lately"}),
+ R("exerciseTime",G_EX,"When do you usually do it?",["morning","afternoon","evening","varies"],{d:1,when:a=>!pin(a,"exercise","rarely"),period:"a typical week lately"}),
+ R("exerciseFeel",G_EX,"How do you usually feel afterwards?",["better","the same","worse","drained"],{d:1,when:a=>!pin(a,"exercise","rarely"),period:"lately"}),
+ C("exerciseBarrier",G_EX,"What gets in the way?",["time","energy","health or pain","motivation","cost","don't enjoy it","weather"],{d:1,when:a=>pin(a,"exercise","rarely"),why:"you rarely exercise",period:"lately"}),
+ // ---- health
+ C("conditions",G_HEALTH,"Does anything affect how you feel day to day?",["anxiety","low mood / depression","ADHD","chronic pain","sleep problems","a medical condition affecting energy","none","prefer not to say"],{}),
+ R("anxietyCare",G_HEALTH,"For anxiety: how is it handled?",care3,{d:1,when:a=>pin(a,"conditions","anxiety"),why:"you picked anxiety"}),
+ C("anxietyTrig",G_HEALTH,"What tends to set it off?",["social situations","work / school","health","uncertainty","no known trigger"],{d:2,when:a=>pin(a,"conditions","anxiety"),period:"lately"}),
+ R("moodCare",G_HEALTH,"For low mood / depression: how is it handled?",care3,{d:1,when:a=>pin(a,"conditions","low mood / depression"),why:"you picked low mood / depression"}),
+ R("moodSeason",G_HEALTH,"Is it worse in certain seasons?",["yes","no","not sure"],{d:2,when:a=>pin(a,"conditions","low mood / depression")}),
+ R("adhdCare",G_HEALTH,"For ADHD: how is it handled?",care3,{d:1,when:a=>pin(a,"conditions","ADHD"),why:"you picked ADHD"}),
+ C("painWhere",G_HEALTH,"Where is the pain?",["head","back / neck","joints","abdomen","other"],{d:1,when:a=>pin(a,"conditions","chronic pain"),why:"you picked chronic pain"}),
+ R("painFreq",G_HEALTH,"How often do you have it?",["daily","weekly","occasionally"],{d:2,when:a=>pin(a,"conditions","chronic pain"),period:"lately"}),
+ R("painLevel",G_HEALTH,"How intense is it usually?",["mild","moderate","severe"],{d:2,when:a=>pin(a,"conditions","chronic pain"),period:"lately"}),
+ R("sleepDx",G_HEALTH,"Have your sleep problems been diagnosed?",["yes","no","not sure"],{d:1,when:a=>pin(a,"conditions","sleep problems"),why:"you picked sleep problems"}),
+ T("medCondText",G_HEALTH,"What is the condition? (optional)",{d:1,when:a=>pin(a,"conditions","a medical condition affecting energy"),why:"you picked a medical condition"}),
+ R("meds",G_HEALTH,"Do you take medication that may affect mood, energy or sleep?",["yes","no","prefer not to say"],{}),
+ C("medsKind",G_HEALTH,"What kinds?",["for anxiety or mood","stimulant","sleep medication","pain medication","hormonal","blood pressure / heart","other"],{d:1,when:a=>pin(a,"meds","yes"),why:"you take medication"}),
+ R("medsTime",G_HEALTH,"When do you usually take it?",["morning","evening","varies"],{d:1,when:a=>pin(a,"meds","yes"),period:"lately"}),
+ C("medsSide",G_HEALTH,"Any side effects you notice?",["drowsiness","nausea","restlessness","appetite changes","none or unsure"],{d:1,when:a=>pin(a,"meds","yes"),period:"lately"}),
+ R("medsChange",G_HEALTH,"Has your dose changed in the last 3 months?",["yes","no"],{d:1,when:a=>pin(a,"meds","yes"),period:"the last 3 months"}),
+ // ---- logging
+ C("logTimes",G_LOG,"When do you expect to log most?",["morning","afternoon","evening","night"],{period:"going forward"}),
+ R("logFreq",G_LOG,"How many entries a day do you expect?",["1","2-3","4 or more","only when something happens"],{period:"going forward"}),
+ C("logEvents",G_LOG,"What would make you log?",["a strong emotion","after stress","after bad sleep","after something good","other"],{d:1,when:a=>pin(a,"logFreq","only when something happens"),why:"you'll log only when something happens",period:"going forward"})
 ];
+function visibleProfile(){
+  const eff={},out=[];
+  PROFILE_QS.forEach(q=>{
+    if(q.when&&!q.when(eff))return;
+    out.push(q);
+    const v=profDraft[q.field];
+    if(v!=null&&v!==""&&!(Array.isArray(v)&&!v.length))eff[q.field]=v;
+  });
+  return out;
+}
 const profileDone=()=>!!(db.profile&&db.profile.done);
 const READ_LABEL={mood:"Mood rating",energy:"Energy rating",stress:"Stress rating",emotions:"Emotions picked",body:"Body sensations picked"};
 const qLabel=f=>(ALL_QS.find(q=>q.field===f)||{}).label||f;
@@ -246,33 +390,40 @@ const viewLog=()=>(!profileDone()||editingProfile)?viewProfile():(step==="core"?
 const pVal=q=>{const v=profDraft[q.field];return v==null?(q.type==="check"?[]:""):v;};
 function pControl(q){
   const cur=pVal(q),f=esc(q.field);
-  if(q.type==="number")return `<input type="number" inputmode="numeric" min="1" max="10" step="1" data-p="${f}" value="${esc(cur)}">`;
+  if(q.type==="number")return `<input type="number" inputmode="decimal" min="${q.min}" max="${q.max}" step="any" data-p="${f}" value="${esc(cur)}">`;
+  if(q.type==="text")return `<input type="text" data-p="${f}" value="${esc(cur)}">`;
   if(q.type==="check")return q.opts.map(o=>opt("checkbox","",`data-p="${f}"`,o,cur.includes(o))).join("");
   return q.opts.map(o=>opt("radio","p_"+q.field,`data-p="${f}"`,o,cur===o)).join("");
 }
+function profileFormHTML(){
+  const vis=visibleProfile();
+  let h="",group=null;
+  vis.forEach(q=>{
+    if(q.group!==group){if(group!==null)h+=`</fieldset>`;h+=`<fieldset><legend><b>${esc(q.group)}</b></legend>`;group=q.group;}
+    h+="<blockquote>".repeat(q.d)+`<p>${q.why?`<small>Asked because ${esc(q.why)}.</small><br>`:""}<small>Covers: ${esc(q.period)}.</small><br>${esc(q.q)}${q.req?" (required)":" (optional)"}<br>${pControl(q)}</p>`+"</blockquote>".repeat(q.d);
+  });
+  return h+`</fieldset><p><small>${vis.length} questions showing. More can appear as you answer.</small></p>`;
+}
+const refreshProfile=()=>{const f=document.getElementById("pf");if(f)f.innerHTML=profileFormHTML();};
 function viewProfile(){
   const first=!profileDone();
-  let h=`<h1>${first?"Getting to know you":"Edit your profile"}</h1>
-  <p>${first?"Before your first entry, a few questions about you. ":""}These give context for reading your logs. They are asked once, they are stored only in this browser, and nothing is uploaded. Each question says what period it covers. Only the ones marked required must be answered; skip anything you prefer not to share. You can edit these later on the Data tab.</p>`;
-  let group=null;
-  PROFILE_QS.forEach(q=>{
-    if(q.group!==group){if(group!==null)h+=`</fieldset>`;h+=`<fieldset><legend><b>${esc(q.group)}</b></legend>`;group=q.group;}
-    h+=`<p><small>Covers: ${esc(q.period)}.</small><br>${esc(q.q)}${q.req?" (required)":" (optional)"}<br>${pControl(q)}</p>`;
-  });
-  h+=`</fieldset><p><button id="profSave">${first?"Save and start logging":"Save profile"}</button>${first?"":" <button id=\"profCancel\">Cancel</button>"}</p>`;
-  return h;
+  return `<h1>${first?"Getting to know you":"Edit your profile"}</h1>
+  <p>${first?"Before your first entry, some questions about you. ":""}These give context for reading your logs. They are asked once, they are stored only in this browser, and nothing is uploaded. The questions branch: answers can open deeper follow-ups right away. Each question says what period it covers. Only the ones marked required must be answered; skip anything you prefer not to share. You can edit these later on the Data tab.</p>
+  <div id="pf">${profileFormHTML()}</div>
+  <p><button id="profSave">${first?"Save and start logging":"Save profile"}</button>${first?"":' <button id="profCancel">Cancel</button>'}</p>`;
 }
 function saveProfile(){
   const miss=[],answers={};
-  PROFILE_QS.forEach(q=>{
+  visibleProfile().forEach(q=>{
     const v=pVal(q);
-    const empty=q.type==="check"?!v.length:v==="";
+    const empty=q.type==="check"?!v.length:(q.type==="text"?!String(v).trim():v==="");
     if(empty){if(q.req)miss.push(q.q);return;}
     if(q.type==="number"){
       const n=Number(v);
-      if(!(n>=1&&n<=10)){miss.push(q.q+" (enter 1-10, or clear it)");return;}
+      if(!(n>=q.min&&n<=q.max)){miss.push(`${q.q} (enter ${q.min}-${q.max}, or clear it)`);return;}
       answers[q.field]=n;
-    }else answers[q.field]=Array.isArray(v)?v.slice():v;
+    }else if(q.type==="text")answers[q.field]=String(v).trim();
+    else answers[q.field]=Array.isArray(v)?v.slice():v;
   });
   if(miss.length){status(`<p><b>Please fix:</b></p><ul>${miss.map(m=>`<li>${esc(m)}</li>`).join("")}</ul>`);return;}
   db.profile={done:true,ts:new Date().toISOString(),answers};
@@ -374,6 +525,10 @@ function viewLogic(){
 
   <h2>Step 0: getting to know you</h2>
   <p>Before your first entry you answer a one-time profile (goals, daily life, usual mood/energy/stress baseline, sleep, caffeine, alcohol and exercise habits, health context, when you plan to log). It is stored in this browser and included in JSON backups, but it is not part of any entry and does not change which follow-ups are asked. Baselines are saved for your own reference and are not yet used in Insights. Profile questions live in the PROFILE_QS table.</p>
+  <p>The profile <b>branches</b>: for example, saying your weekdays are mostly work opens questions about the kind of work, hours, pay, how much you like it and how qualified you feel, and answers to those open still deeper ones (a low job rating asks what bothers you). Answers you give to a question that later disappears (because you changed a parent answer) are dropped when you save.</p>
+  <details><summary>Profile branches as an outline (${PROFILE_QS.length} questions)</summary>
+  ${PROFILE_QS.map(q=>`<div style="margin-left:${q.d*1.5}em">${q.why?`<small><b>IF</b> ${esc(q.why)}</small><br>`:""}${esc(q.q)}${q.req?" *":""} <small>[${esc(q.period)}]</small></div>`).join("")}
+  </details>
   <h2>What time does an entry cover?</h2>
   <ul>
   <li><b>Step 1</b> covers one instant: the moment you press Next. It can't be changed or back-dated, and it asks nothing about the past.</li>
@@ -520,7 +675,7 @@ app.addEventListener("input",e=>{
   const t=e.target;
   if(t.dataset.s)setSlider(t);
   else if(t.dataset.q){const x=findQ(t.dataset.q);if(x&&x.type==="number")setVal(x,t.value);}
-  else if(t.dataset.p){const x=PROFILE_QS.find(q=>q.field===t.dataset.p);if(x&&x.type==="number")profDraft[x.field]=t.value;}
+  else if(t.dataset.p){const x=PROFILE_QS.find(q=>q.field===t.dataset.p);if(x&&(x.type==="number"||x.type==="text"))profDraft[x.field]=t.value;}
 });
 app.addEventListener("change",async e=>{
   const t=e.target,ds=t.dataset;
@@ -535,6 +690,7 @@ app.addEventListener("change",async e=>{
     const x=PROFILE_QS.find(q=>q.field===ds.p);if(!x)return;
     if(x.type==="check"){const a=pVal(x);profDraft[x.field]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);}
     else profDraft[x.field]=t.value;
+    refreshProfile();
     return;}
   if(ds.c){const a=draft[ds.c];draft[ds.c]=t.checked?[...a,t.value]:a.filter(v=>v!==t.value);return;}
   if(t.id==="file"){
