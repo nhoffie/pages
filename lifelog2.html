@@ -495,6 +495,7 @@ function render(){
   document.getElementById("nav").innerHTML=tabs.map(([k,l])=>tab===k?`<b>[${l}]</b>`:`<button data-tab="${k}">${l}</button>`).join(" ");
   document.getElementById("banner").innerHTML=storageOK?"":box("<b>Browser storage is not available here.</b> Entries are kept only until you close this page. Open this file in your regular browser (Chrome or Safari), or export a backup from the Data tab often.");
   document.getElementById("app").innerHTML=({log:viewLog,history:viewHistory,insights:viewInsights,logic:viewLogic,data:viewData})[tab]();
+  if(tab==="logic")initDiagram();
 }
 const viewLog=()=>(!profileDone()||editingProfile)?viewProfile():viewEntry();
 
@@ -597,6 +598,116 @@ function viewHistory(){
 }
 
 /* ---------- Logic tab (generated from RULES) ---------- */
+/* ---------- Logic tab: pannable / zoomable decision tree (generated from RULES and PROFILE_QS) ---------- */
+let logicView="entry";                       // "entry" | "profile"
+const dgs={view:null,tx:0,ty:0,s:1,w:0,h:0,rootCY:0};
+const wrapText=(t,n)=>{const out=[];let cur="";String(t).split(/\s+/).forEach(w=>{if(cur&&(cur+" "+w).length>n){out.push(cur);cur=w;}else cur=cur?cur+" "+w:w;});if(cur)out.push(cur);return out;};
+const bullet=(t,n)=>wrapText(t,n-2).map((x,i)=>(i?"  ":"• ")+x);
+const TYPE_WORD={check:"pick any",radio:"pick one",number:"number",text:"text"};
+const qLines=qs=>qs.flatMap(q=>bullet(`${q.q}${q.req?" *":""} [${TYPE_WORD[q.type]||q.type}]`,34));
+const mkNode=(kind,lines,extra)=>Object.assign({kind,lines,children:[]},extra);
+
+function entryTree(){
+  const root=mkNode("start",["NEW ENTRY","(after the one-time profile)","rules re-run after every answer"]);
+  const inputs=[["mood","OVERVIEW: Mood right now","1-10, must be set"],["energy","OVERVIEW: Energy right now","1-10, must be set"],["stress","OVERVIEW: Stress right now","1-10, must be set"],
+    ["emotions","OVERVIEW: Emotions right now","pick any"],["body","OVERVIEW: Body right now","pick any"],["mind","OVERVIEW: What's on your mind","fixed question"],["context","FIXED QUESTIONS","end of form, every entry"]];
+  const ruleNode=r=>{
+    const reads=r.reads.map(k=>READ_LABEL[k]||qLabel(k));
+    const ifN=mkNode("if",wrapText("IF "+r.cond,34).concat(reads.length?["(reads: "+reads.join(", ")+")"]:[]),{active:!!r.test()});
+    const ask=mkNode("ask",qLines(r.qs()));
+    ask.children=RULES.filter(x=>x.parent===r.id).map(ruleNode);
+    ifN.children=[ask];
+    return ifN;
+  };
+  inputs.forEach(([a,t,sub])=>{
+    const n=mkNode("input",[t,sub]);
+    n.children=RULES.filter(r=>r.anchor===a&&!r.parent).map(ruleNode);
+    root.children.push(n);
+  });
+  return root;
+}
+function profileTree(){
+  const root=mkNode("start",["PROFILE","asked once, before the first entry","(edit later on the Data tab)"]);
+  const stack=[root];let lastGroup=null;
+  PROFILE_QS.forEach(q=>{
+    const lines=[];
+    if(q.d===0&&q.group!==lastGroup){lines.push("# "+q.group);lastGroup=q.group;}
+    if(q.why)lines.push(...wrapText("IF "+q.why,34));
+    lines.push(...bullet(`${q.q}${q.req?" *":""} [${TYPE_WORD[q.type]||q.type}]`,34));
+    const n=mkNode("ask",lines);
+    (stack[q.d]||root).children.push(n);
+    stack[q.d+1]=n;stack.length=q.d+2;
+  });
+  return root;
+}
+function layoutTree(root){
+  const W=240,GX=70,GY=14;let cursor=0,maxX=0;
+  const shiftKids=(n,dy)=>n.children.forEach(c=>{c.y+=dy;shiftKids(c,dy);});
+  (function go(n,depth){
+    n.h=n.lines.length*15+14;n.w=W;n.x=depth*(W+GX);maxX=Math.max(maxX,n.x+W);
+    if(!n.children.length){n.y=cursor;cursor+=n.h+GY;return;}
+    const start=cursor;
+    n.children.forEach(c=>go(c,depth+1));
+    const f=n.children[0],l=n.children[n.children.length-1];
+    n.y=(f.y+l.y+l.h)/2-n.h/2;
+    if(n.y<start){const d=start-n.y;shiftKids(n,d);n.y=start;cursor+=d;}
+    cursor=Math.max(cursor,n.y+n.h+GY);
+  })(root,0);
+  return {w:maxX,h:Math.max(0,cursor-GY)};
+}
+function diagramSVG(){
+  const root=logicView==="profile"?profileTree():entryTree();
+  const dim=layoutTree(root);dgs.w=dim.w;dgs.h=dim.h;dgs.rootCY=root.y+root.h/2;
+  let edges="",nodes="";
+  (function walk(n){
+    n.children.forEach(c=>{
+      const x1=n.x+n.w,y1=n.y+n.h/2,x2=c.x,y2=c.y+c.h/2,xm=(x1+x2)/2;
+      edges+=`<path d="M${x1} ${y1} C${xm} ${y1} ${xm} ${y2} ${x2} ${y2}" fill="none" stroke="currentColor" stroke-width="1"/>`;
+      walk(c);
+    });
+    const rx=n.kind==="if"?14:n.kind==="start"||n.kind==="input"?8:2;
+    nodes+=`<g><rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="${rx}" style="fill:Canvas" stroke="currentColor" stroke-width="${n.active?3:1}"${n.kind==="if"?' stroke-dasharray="'+(n.active?'0':'5 3')+'"':""}/>`+
+      `<text x="${n.x+8}" y="${n.y+17}" font-size="12" fill="currentColor"${n.kind==="start"||n.kind==="input"?' font-weight="bold"':""}>`+
+      n.lines.map((t,i)=>`<tspan x="${n.x+8}" dy="${i?15:0}">${esc(t)}</tspan>`).join("")+`</text></g>`;
+  })(root);
+  return `<g id="dgvp">${edges}${nodes}</g>`;
+}
+function diagramHTML(){
+  return `<p><button data-lv="entry">${logicView==="entry"?"[Entry questions]":"Entry questions"}</button> <button data-lv="profile">${logicView==="profile"?"[Profile questions]":"Profile questions"}</button></p>
+  <p><button data-dg="in">Zoom +</button> <button data-dg="out">Zoom -</button> <button data-dg="fit">Fit all</button> <button data-dg="start">Go to start</button></p>
+  <div id="dg" style="border:1px solid;height:70vh;overflow:hidden"><svg id="dgsvg" width="100%" height="100%" style="touch-action:none;display:block;cursor:grab">${diagramSVG()}</svg></div>`;
+}
+function dgApply(){const g=document.getElementById("dgvp");if(g)g.setAttribute("transform",`translate(${dgs.tx} ${dgs.ty}) scale(${dgs.s})`);}
+function dgZoomAt(px,py,f){const ns=Math.min(3,Math.max(0.04,dgs.s*f)),r=ns/dgs.s;dgs.tx=px-(px-dgs.tx)*r;dgs.ty=py-(py-dgs.ty)*r;dgs.s=ns;dgApply();}
+function dgBox(){const c=document.getElementById("dg");return c?c.getBoundingClientRect():null;}
+function dgStart(){const b=dgBox();if(!b)return;dgs.s=b.width<500?0.6:0.85;dgs.tx=12;dgs.ty=b.height/2-dgs.rootCY*dgs.s;dgApply();}
+function dgFit(){const b=dgBox();if(!b)return;dgs.s=Math.min(3,Math.min(b.width/(dgs.w+24),b.height/(dgs.h+24)));dgs.tx=(b.width-dgs.w*dgs.s)/2;dgs.ty=(b.height-dgs.h*dgs.s)/2;dgApply();}
+function dgAction(a){
+  const b=dgBox();if(!b)return;
+  if(a==="in")dgZoomAt(b.width/2,b.height/2,1.4);
+  else if(a==="out")dgZoomAt(b.width/2,b.height/2,1/1.4);
+  else if(a==="fit")dgFit();
+  else if(a==="start")dgStart();
+}
+function initDiagram(){
+  const svg=document.getElementById("dgsvg");if(!svg)return;
+  if(dgs.view!==logicView){dgs.view=logicView;dgStart();}else dgApply();
+  const pts=new Map();let prev=null;
+  const pos=e=>{const b=svg.getBoundingClientRect();return {x:e.clientX-b.left,y:e.clientY-b.top};};
+  const info=()=>{const a=[...pts.values()];if(a.length<2)return null;return {d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)||1,x:(a[0].x+a[1].x)/2,y:(a[0].y+a[1].y)/2};};
+  svg.addEventListener("pointerdown",e=>{pts.set(e.pointerId,pos(e));try{svg.setPointerCapture(e.pointerId);}catch(x){}prev=info();svg.style.cursor="grabbing";});
+  svg.addEventListener("pointermove",e=>{
+    if(!pts.has(e.pointerId))return;
+    const p=pos(e),o=pts.get(e.pointerId);
+    pts.set(e.pointerId,p);
+    if(pts.size===1){dgs.tx+=p.x-o.x;dgs.ty+=p.y-o.y;dgApply();}
+    else if(pts.size===2){const n=info();if(prev&&n){dgs.tx+=n.x-prev.x;dgs.ty+=n.y-prev.y;dgZoomAt(n.x,n.y,n.d/prev.d);}prev=n;}
+  });
+  const up=e=>{pts.delete(e.pointerId);prev=info();if(!pts.size)svg.style.cursor="grab";};
+  svg.addEventListener("pointerup",up);svg.addEventListener("pointercancel",up);
+  svg.addEventListener("wheel",e=>{e.preventDefault();const p=pos(e);dgZoomAt(p.x,p.y,Math.exp(-e.deltaY*(e.ctrlKey?0.01:0.0015)));},{passive:false});
+}
+
 function viewLogic(){
   const T=`<table border="1" cellpadding="4" cellspacing="0">`;
   const docQs=r=>r.qs().map(q=>esc(q.q)+(q.req?" *":"")).join("; ");
@@ -617,42 +728,9 @@ function viewLogic(){
   return `<h1>How questions are chosen</h1>
   <p>After the one-time profile, every entry is one page. The overview of how you are right now is always asked (its questions are fixed, but the order and extras of its emotion and body choices adapt to your profile). Follow-ups are chosen by the rules below and appear inline, right under the overview answer that triggers them, the same way the profile branches. Deeper follow-ups can depend on your earlier follow-up answers. This page is generated from the same rule table the form uses, so it always matches what the form does.</p>
 
-  <h2>Flowchart</h2>
-<pre style="white-space:pre-wrap">+-----------------------------+
-| PROFILE (once)              |
-| required ones must be       |
-| answered; editable on the   |
-| Data tab                    |
-+--------------+--------------+
-               | [Save and start logging]
-               v
-+-----------------------------+
-| ENTRY (one page)            |
-| overview, this instant only:|
-| mood, energy, stress,       |
-| emotions, body              |
-|   |                         |
-|   +--> rules run after every|
-|        answer; matching     |
-|        follow-ups appear    |
-|        right under the      |
-|        answer, and an answer|
-|        can open deeper ones |
-| "On your mind" (required)   |
-| opens a tailored branch per |
-| topic you pick              |
-| fixed Context questions at  |
-| the end                     |
-+--------------+--------------+
-               | [Save entry]
-               | stamped at your first answer
-               v
-+-----------------------------+
-| SAVE                        |
-| required (*) must be filled |
-| only visible questions are  |
-| stored                      |
-+-----------------------------+</pre>
+  <h2>Decision tree</h2>
+  <p>This diagram is generated from the same rule tables the forms use. Read it left to right. <b>Rounded dashed boxes</b> are conditions (IF); <b>square boxes</b> are the questions that get asked when the condition holds (* = required). A thick solid border marks a condition that is true for the entry you are drafting right now. Deeper boxes only appear after their parent's answers. Drag to pan, pinch or use the mouse wheel to zoom, or use the buttons. Touching the diagram pans it; scroll the page by touching outside it.</p>
+  ${diagramHTML()}
 
   <h2>Step 0: getting to know you</h2>
   <p>Before your first entry you answer a one-time profile (goals, daily life, usual mood/energy/stress baseline, sleep, caffeine, alcohol and exercise habits, health context, when you plan to log). It is stored in this browser and included in JSON backups, but it is not part of any entry and does not change which follow-ups are asked. Baselines are saved for your own reference and are not yet used in Insights. Profile questions live in the PROFILE_QS table.</p>
@@ -845,6 +923,8 @@ function tryImport(text){
 document.addEventListener("click",e=>{
   const t=e.target,ds=t.dataset||{};
   if(ds.tab){tab=ds.tab;render();window.scrollTo(0,0);return;}
+  if(ds.lv){logicView=ds.lv;render();return;}
+  if(ds.dg){dgAction(ds.dg);return;}
   if(ds.s){setSlider(t);refreshFU();return;}   // counts a tap on the current value
   if(ds.dlg){
     const p=pending,v=(document.getElementById("dlgText")||{}).value;
